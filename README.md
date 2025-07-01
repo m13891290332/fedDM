@@ -6,13 +6,13 @@ models文件夹保存模型结构文件
 results文件夹保存模型参数文件
 server文件夹保存服务器文件
 utils文件夹保存随机化等设置文件
-wandb文件夹是因为我的电脑没法远程连接wandb，所以选择离线运行而产生的wandb相关文件，这个我也不太清楚
+wandb文件夹是因为我的电脑没法远程连接wandb，所以选择离线运行而产生的wandb相关文件
 config.py文件是参数文件
 main.py是主函数
 
 
 
-
+主目录创建log、results、datasets/torchvision文件夹
 先运行数据集划分（如果修改了数据集、客户端数量和alpha参数，必须重新运行一次）
 python dataset/data/dataset_partition.py --dataset CIFAR10 --client_num 10 --alpha 0.5 --dataset_root datasets/torchvision
 main.py方式运行（推荐）（设置使用哪个gpu的环境变量在main.py中修改）
