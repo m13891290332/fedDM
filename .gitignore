@@ -2,3 +2,5 @@ log/
 results/
 wandb/
 datasets/
+dataset/split_file/
+_pycache_/

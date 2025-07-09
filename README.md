@@ -14,9 +14,10 @@ main.py是主函数
 
 主目录创建log、results、datasets/torchvision文件夹
 先运行数据集划分（如果修改了数据集、客户端数量和alpha参数，必须重新运行一次）
-python dataset/data/dataset_partition.py --dataset CIFAR10 --client_num 10 --alpha 0.5 --dataset_root datasets/torchvision
+python dataset/data/dataset_partition.py --dataset CIFAR10 --client_num 50 --alpha 0.1 --dataset_root datasets/torchvision
+
 main.py方式运行（推荐）（设置使用哪个gpu的环境变量在main.py中修改）
-python main.py --model ConvNet --dataset CIFAR10 --client_num 10 --alpha 0.5 --ipc 50 --dc_iterations 1000 --model_epochs 500
+python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 500  --partition_method part
 
 
 
@@ -24,3 +25,11 @@ python main.py --model ConvNet --dataset CIFAR10 --client_num 10 --alpha 0.5 --i
 run.sh方式运行（未测试）
 chmod +x run.sh  # 给脚本添加执行权限
 ./run.sh  # 运行脚本
+
+
+
+后台运行与终止
+nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 500  --partition_method only > app.log 2>&1 &
+ps -ef | grep MaCS
+kill
+tail -n 200 -f app.log

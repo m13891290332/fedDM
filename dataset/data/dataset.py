@@ -74,13 +74,20 @@ class PerLabelDatasetNonIID():
 
     def get_images(self, c, n, avg=False):  # get n random images from class c
         if not avg:
-            if len(self.indices_class[c]) >= n:
+            if len(self.indices_class[c]) == 0:
+                # If no samples for this class, return zero tensor with correct shape
+                return torch.zeros(n, *self.images_all.shape[1:], device=self.images_all.device)
+            elif len(self.indices_class[c]) >= n:
                 idx_shuffle = np.random.permutation(self.indices_class[c])[:n]
             else:
                 sampled_idx = np.random.choice(self.indices_class[c], n - len(self.indices_class[c]), replace=True)
                 idx_shuffle = np.concatenate((self.indices_class[c], sampled_idx), axis=None)
             return self.images_all[idx_shuffle]
         else:
+            if len(self.indices_class[c]) == 0:
+                # If no samples for this class, return zero tensor with correct shape
+                return torch.zeros(n, *self.images_all.shape[1:], device=self.images_all.device)
+            
             sampled_imgs = []
             for _ in range(n):
                 if len(self.indices_class[c]) >= 5:

@@ -24,7 +24,7 @@ def main():
     
     # 设置日志
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"{current_time}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients_{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs_cr{args.communication_rounds}.log"
+    log_filename = f"{current_time}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients_{args.partition_method}partition_{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs_cr{args.communication_rounds}.log"
     log_dir = "/home/MaCS/fedDM/log"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, log_filename)
@@ -59,13 +59,44 @@ def main():
     logging.info(f"Log file: {log_path}")
     logging.info(f"Arguments: {vars(args)}")
     
-    split_file = f'/{args.dataset}_client_num={args.client_num}_alpha={args.alpha}.json'
+    # 根据划分方式选择对应的split文件
+    if args.partition_method == 'part':
+        split_file = f'/{args.dataset}_client_num={args.client_num}_alpha={args.alpha}.json'
+    elif args.partition_method == 'only':
+        split_file = f'/{args.dataset}_only_dirichlet_client_num={args.client_num}_alpha={args.alpha}.json'
+    else:
+        raise ValueError(f"Unknown partition method: {args.partition_method}")
+    
     args.split_file = os.path.join(os.path.dirname(__file__), "dataset/split_file"+split_file)
+    
+    # 检查split文件是否存在，如果不存在则自动生成
+    if not os.path.exists(args.split_file):
+        logging.info(f"Split file not found: {args.split_file}")
+        logging.info(f"Generating data partition using method: {args.partition_method}")
+        
+        # 动态导入并运行相应的划分脚本
+        if args.partition_method == 'part':
+            from dataset.data.part_dataset_partition import partition
+        elif args.partition_method == 'only':
+            from dataset.data.only_dataset_partition import partition
+        
+        # 创建划分参数
+        partition_args = type('Args', (), {
+            'dataset': args.dataset,
+            'client_num': args.client_num,
+            'alpha': args.alpha,
+            'dataset_root': args.dataset_root,
+            'seed': args.seed
+        })()
+        
+        # 执行数据划分
+        partition(partition_args)
+        logging.info(f"Data partition completed. File saved to: {args.split_file}")
 
     # set seeds and parse args, init wandb
     mode = "disabled" if args.debug else "offline"
     wandb.init(
-        project=f'FedDM_{args.dataset}_client{args.client_num}_{args.alpha}',
+        project=f'FedDM_{args.dataset}_client{args.client_num}_{args.alpha}_{args.partition_method}',
         name=f'{args.model}_cr{args.communication_rounds}_join_ratio{args.join_ratio}',
         mode=mode,
     )
@@ -78,6 +109,27 @@ def main():
     with open(args.split_file, 'r') as file:
         file_data = json.load(file)
     client_indices, client_classes = file_data['client_idx'], file_data['client_classes']
+
+    # 检查数据分配情况
+    logging.info("Checking data allocation...")
+    empty_clients = []
+    for i, indices in enumerate(client_indices):
+        if len(indices) == 0:
+            empty_clients.append(i)
+        logging.info(f"Client {i}: {len(indices)} samples, classes: {client_classes[i]}")
+    
+    if empty_clients:
+        logging.warning(f"Found empty clients: {empty_clients}")
+        logging.info("Filtering out empty clients to continue training...")
+        
+        # 过滤掉空客户端
+        valid_clients = [i for i in range(args.client_num) if i not in empty_clients]
+        client_indices = [client_indices[i] for i in valid_clients]
+        client_classes = [client_classes[i] for i in valid_clients]
+        
+        # 更新客户端数量
+        args.client_num = len(valid_clients)
+        logging.info(f"Updated client_num to {args.client_num} (excluded {len(empty_clients)} empty clients)")
 
     train_sets = [Subset(train_set, indices) for indices in client_indices]
 
@@ -102,7 +154,7 @@ def main():
 
     # init server and clients
     client_list = [Client(
-        cid=i,
+        cid=i,  # 新的连续ID
         train_set=PerLabelDatasetNonIID(
             train_sets[i],
             client_classes[i],

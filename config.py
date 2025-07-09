@@ -9,8 +9,10 @@ parser.add_argument("--device", type=str, default="cuda:1")
 parser.add_argument("--dataset_root", type=str, default="/home/MaCS/fedDM/datasets/torchvision")
 parser.add_argument("--split_file", type=str, default="")
 parser.add_argument("--dataset", type=str, default='CIFAR10')
-parser.add_argument("--client_num", type=int, default=10)
-parser.add_argument("--alpha", type=float, default=0.5)
+parser.add_argument("--client_num", type=int, default=50)
+parser.add_argument("--alpha", type=float, default=0.1)
+parser.add_argument("--partition_method", type=str, default='part', choices=['part', 'only'],
+                    help='Data partition method: part (class-based + dirichlet) or only (direct dirichlet)')
 
 parser.add_argument("--model", type=str, default="ConvNet")
 parser.add_argument("--communication_rounds", type=int, default=20)
