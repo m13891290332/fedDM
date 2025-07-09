@@ -12,7 +12,9 @@ import wandb
 from torch.utils.data import Subset
 
 from client.fedDMclient import Client
+from client.fedprotoDMclient import ProtoDMClient
 from server.fedDMserver import Server
+from server.fedprotoDMserver import ProtoDMServer
 from config import parser
 from dataset.data.dataset import get_dataset, PerLabelDatasetNonIID
 from models.fedDMmodels import ResNet18, ConvNet
@@ -24,7 +26,7 @@ def main():
     
     # 设置日志
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"{current_time}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients_{args.partition_method}partition_{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs_cr{args.communication_rounds}.log"
+    log_filename = f"{current_time}_{args.algorithm}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients_{args.partition_method}partition_{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs_cr{args.communication_rounds}.log"
     log_dir = "/home/MaCS/fedDM/log"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, log_filename)
@@ -96,7 +98,7 @@ def main():
     # set seeds and parse args, init wandb
     mode = "disabled" if args.debug else "offline"
     wandb.init(
-        project=f'FedDM_{args.dataset}_client{args.client_num}_{args.alpha}_{args.partition_method}',
+        project=f'{args.algorithm}_{args.dataset}_client{args.client_num}_{args.alpha}_{args.partition_method}',
         name=f'{args.model}_cr{args.communication_rounds}_join_ratio{args.join_ratio}',
         mode=mode,
     )
@@ -153,45 +155,87 @@ def main():
         raise NotImplemented("only support ConvNet and ResNet")
 
     # init server and clients
-    client_list = [Client(
-        cid=i,  # 新的连续ID
-        train_set=PerLabelDatasetNonIID(
-            train_sets[i],
-            client_classes[i],
-            dataset_info['channel'],
-            device,
-        ),
-        classes=client_classes[i],
-        dataset_info=dataset_info,
-        ipc=args.ipc,
-        rho=args.rho,
-        dc_iterations=args.dc_iterations,
-        real_batch_size=args.dc_batch_size,
-        image_lr=args.image_lr,
-        device=device,
-    ) for i in range(args.client_num)]
+    model_identification = f'{args.algorithm}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients/{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs'
+    
+    if args.algorithm == "fedDM":
+        # 原版fedDM实现
+        client_list = [Client(
+            cid=i,  # 新的连续ID
+            train_set=PerLabelDatasetNonIID(
+                train_sets[i],
+                client_classes[i],
+                dataset_info['channel'],
+                device,
+            ),
+            classes=client_classes[i],
+            dataset_info=dataset_info,
+            ipc=args.ipc,
+            rho=args.rho,
+            dc_iterations=args.dc_iterations,
+            real_batch_size=args.dc_batch_size,
+            image_lr=args.image_lr,
+            device=device,
+        ) for i in range(args.client_num)]
 
-    model_identification = f'{args.dataset}_alpha{args.alpha}_{args.client_num}clients/{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs'
+        server = Server(
+            global_model=global_model,
+            clients=client_list,
+            communication_rounds=args.communication_rounds,
+            join_ratio=args.join_ratio,
+            batch_size=args.batch_size,
+            model_epochs=args.model_epochs,
+            eval_gap=args.eval_gap,
+            test_set=test_set,
+            test_loader=test_loader,
+            device=device,
+            model_identification=model_identification,
+        )
+        
+    elif args.algorithm == "fedprotoDM":
+        # fedprotoDM实现
+        client_list = [ProtoDMClient(
+            cid=i,  # 新的连续ID
+            train_set=PerLabelDatasetNonIID(
+                train_sets[i],
+                client_classes[i],
+                dataset_info['channel'],
+                device,
+            ),
+            classes=client_classes[i],
+            dataset_info=dataset_info,
+            ipc=args.ipc,
+            rho=args.rho,
+            dc_iterations=args.dc_iterations,
+            real_batch_size=args.dc_batch_size,
+            device=device,
+        ) for i in range(args.client_num)]
 
-    server = Server(
-        global_model=global_model,
-        clients=client_list,
-        communication_rounds=args.communication_rounds,
-        join_ratio=args.join_ratio,
-        batch_size=args.batch_size,
-        model_epochs=args.model_epochs,
-        eval_gap=args.eval_gap,
-        test_set=test_set,
-        test_loader=test_loader,
-        device=device,
-        model_identification=model_identification,
-    )
-    print('Server and Clients have been created.')
+        server = ProtoDMServer(
+            global_model=global_model,
+            clients=client_list,
+            communication_rounds=args.communication_rounds,
+            join_ratio=args.join_ratio,
+            batch_size=args.batch_size,
+            model_epochs=args.model_epochs,
+            dc_iterations=args.dc_iterations,
+            image_lr=args.image_lr,
+            rho=args.rho,
+            eval_gap=args.eval_gap,
+            test_set=test_set,
+            test_loader=test_loader,
+            device=device,
+            model_identification=model_identification,
+            dataset_info=dataset_info,
+        )
+    else:
+        raise ValueError(f"Unknown algorithm: {args.algorithm}")
+    
+    print(f'Server and Clients have been created for {args.algorithm}.')
 
     # fit the model
-    logging.info("Starting model training...")
+    logging.info(f"Starting {args.algorithm} model training...")
     server.fit()
-    logging.info("Model training completed.")
+    logging.info(f"{args.algorithm} model training completed.")
 
 if __name__ == "__main__":
     main()

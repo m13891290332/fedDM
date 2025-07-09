@@ -14,6 +14,8 @@ parser.add_argument("--alpha", type=float, default=0.1)
 parser.add_argument("--partition_method", type=str, default='part', choices=['part', 'only'],
                     help='Data partition method: part (class-based + dirichlet) or only (direct dirichlet)')
 
+parser.add_argument("--algorithm", type=str, default="fedDM", choices=['fedDM', 'fedprotoDM'],
+                    help='Choose algorithm: fedDM (original) or fedprotoDM (server-side synthesis)')
 parser.add_argument("--model", type=str, default="ConvNet")
 parser.add_argument("--communication_rounds", type=int, default=20)
 parser.add_argument("--join_ratio", type=float, default=1.0)
