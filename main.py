@@ -21,7 +21,7 @@ from models.fedDMmodels import ResNet18, ConvNet
 from utils.fedDMutils import setup_seed
 
 def main():
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0 , 1 , 2 , 3"
     args = parser.parse_args()
     
     # 设置日志
@@ -208,6 +208,7 @@ def main():
             dc_iterations=args.dc_iterations,
             real_batch_size=args.dc_batch_size,
             device=device,
+            init_method=args.init_method,
         ) for i in range(args.client_num)]
 
         server = ProtoDMServer(
@@ -220,6 +221,7 @@ def main():
             dc_iterations=args.dc_iterations,
             image_lr=args.image_lr,
             rho=args.rho,
+            init_method=args.init_method,
             eval_gap=args.eval_gap,
             test_set=test_set,
             test_loader=test_loader,

@@ -22,8 +22,6 @@ class ProtoDMClient:
         dc_iterations: int,
         real_batch_size: int,
         device: torch.device,
-        # --- initialization method ---
-        init_method: str = "real_sample",
     ):
         self.cid = cid
 
@@ -35,7 +33,6 @@ class ProtoDMClient:
         self.rho = rho
         self.dc_iterations = dc_iterations
         self.real_batch_size = real_batch_size
-        self.init_method = init_method
 
         self.device = device
 
@@ -93,17 +90,10 @@ class ProtoDMClient:
                     'samples': real_logits[:min(self.real_batch_size * 2, real_logits.size(0))].cpu()  # 保存更多样本logits
                 }
                 
-                # 根据初始化方法决定是否保存原始图像
-                if self.init_method == "real_sample":
-                    # 保存一些原始图像作为初始化参考（模拟 avg=False 行为）
-                    synthesis_info['sample_images'][c] = self.train_set.get_images(c, self.ipc, avg=False).cpu()
-                elif self.init_method == "random":
-                    # 随机初始化模式下不需要发送样本图像，但仍需要一个占位符
-                    synthesis_info['sample_images'][c] = torch.empty(0, self.dataset_info['channel'], 
-                                                                   self.dataset_info['im_size'][0], 
-                                                                   self.dataset_info['im_size'][1])
+                # 保存一些原始图像作为初始化参考（模拟 avg=False 行为）
+                synthesis_info['sample_images'][c] = self.train_set.get_images(c, self.ipc, avg=False).cpu()
                 
-                # 类别统计信息（对随机初始化有用）
+                # 类别统计信息
                 synthesis_info['class_statistics'][c] = {
                     'num_samples': len(self.train_set.indices_class[c]),
                     'data_mean': torch.mean(real_images, dim=[0, 2, 3]).cpu(),

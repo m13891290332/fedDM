@@ -9,8 +9,6 @@ import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-import torchvision.utils as vutils
-import numpy as np
 
 from utils.fedDMutils import random_pertube
 
@@ -29,8 +27,6 @@ class ProtoDMServer:
         dc_iterations: int,
         image_lr: float,
         rho: float,
-        # --- initialization method ---
-        init_method: str,
         # --- test and evaluation information ---
         eval_gap: int,
         test_set: object,
@@ -51,7 +47,6 @@ class ProtoDMServer:
         self.dc_iterations = dc_iterations
         self.image_lr = image_lr
         self.rho = rho
-        self.init_method = init_method
 
         self.eval_gap = eval_gap
         self.test_set = test_set
@@ -102,7 +97,7 @@ class ProtoDMServer:
             
             for client_info in client_synthesis_info:
                 print(f'Synthesizing data for client {client_info["cid"]}...')
-                synthetic_data, synthetic_labels = self.synthesize_data_for_client(client_info, rounds)
+                synthetic_data, synthetic_labels = self.synthesize_data_for_client(client_info)
                 if synthetic_data.size(0) > 0:
                     all_synthetic_data.append(synthetic_data)
                     all_synthetic_labels.append(synthetic_labels)
@@ -159,7 +154,7 @@ class ProtoDMServer:
             os.makedirs(save_root_path, exist_ok=True)
             self.save_model(path=save_root_path, rounds=rounds, include_image=False)
 
-    def synthesize_data_for_client(self, client_info: Dict, round_num: int):
+    def synthesize_data_for_client(self, client_info: Dict):
         """
         为单个客户端合成数据
         """
@@ -206,62 +201,23 @@ class ProtoDMServer:
             device=self.device,
         )
         
-        # 根据初始化方法选择不同的初始化策略
-        if self.init_method == "real_sample":
-            # 使用客户端提供的样本图像初始化合成图像
-            for i, c in enumerate(client_classes):
-                start_idx = i * ipc
-                end_idx = (i + 1) * ipc
-                
-                if c in client_info['sample_images']:
-                    sample_images = client_info['sample_images'][c]
-                    num_samples = min(ipc, sample_images.size(0))
-                    # 确保使用 avg=False 的方式初始化（与 fedDMclient 保持一致）
-                    synthetic_images.data[start_idx:start_idx+num_samples] = sample_images[:num_samples].to(self.device)
-                    # 如果样本数量不足，用随机扰动填充剩余部分
-                    if num_samples < ipc:
-                        remaining = ipc - num_samples
-                        base_sample = sample_images[0:1].to(self.device) if sample_images.size(0) > 0 else synthetic_images[start_idx:start_idx+1]
-                        for j in range(remaining):
-                            noise = torch.randn_like(base_sample) * 0.1
-                            synthetic_images.data[start_idx+num_samples+j:start_idx+num_samples+j+1] = base_sample + noise
-            print(f"Client {cid}: Using real sample initialization")
-        elif self.init_method == "random":
-            # 保持随机初始化，可以选择性地使用数据统计信息进行标准化
-            for i, c in enumerate(client_classes):
-                start_idx = i * ipc
-                end_idx = (i + 1) * ipc
-                
-                # 可选：使用类别统计信息对随机初始化进行标准化
-                if c in client_info['class_statistics']:
-                    class_stats = client_info['class_statistics'][c]
-                    data_mean = class_stats['data_mean'].to(self.device)
-                    data_std = class_stats['data_std'].to(self.device)
-                    
-                    # 标准化随机噪声到接近真实数据的分布
-                    class_images = synthetic_images[start_idx:end_idx]
-                    class_images = class_images * data_std.view(1, -1, 1, 1) + data_mean.view(1, -1, 1, 1)
-                    synthetic_images.data[start_idx:end_idx] = class_images
-            print(f"Client {cid}: Using random initialization with distribution matching")
-        else:
-            raise ValueError(f"Unknown initialization method: {self.init_method}")
-
-       
-        # 保存初始化后的图像
-        initial_labels = []
-        for c in client_classes:
-            initial_labels.extend([c] * ipc)
-        initial_labels = torch.tensor(initial_labels, dtype=torch.long)
-        
-        print(f"Saving initial images for client {cid}, round {round_num}...")
-        self.save_synthetic_images(
-            synthetic_images.detach().clone(), 
-            initial_labels, 
-            cid, 
-            round_num, 
-            'initial', 
-            client_classes
-        )
+        # 使用客户端提供的样本图像初始化合成图像
+        for i, c in enumerate(client_classes):
+            start_idx = i * ipc
+            end_idx = (i + 1) * ipc
+            
+            if c in client_info['sample_images']:
+                sample_images = client_info['sample_images'][c]
+                num_samples = min(ipc, sample_images.size(0))
+                # 确保使用 avg=False 的方式初始化（与 fedDMclient 保持一致）
+                synthetic_images.data[start_idx:start_idx+num_samples] = sample_images[:num_samples].to(self.device)
+                # 如果样本数量不足，用随机扰动填充剩余部分
+                if num_samples < ipc:
+                    remaining = ipc - num_samples
+                    base_sample = sample_images[0:1].to(self.device) if sample_images.size(0) > 0 else synthetic_images[start_idx:start_idx+1]
+                    for j in range(remaining):
+                        noise = torch.randn_like(base_sample) * 0.1
+                        synthetic_images.data[start_idx+num_samples+j:start_idx+num_samples+j+1] = base_sample + noise
 
         # 设置优化器
         optimizer_image = torch.optim.SGD([synthetic_images], lr=self.image_lr, momentum=0.5, weight_decay=0)
@@ -348,17 +304,6 @@ class ProtoDMServer:
         
         synthetic_labels = torch.tensor(synthetic_labels, dtype=torch.long)
         
-        # 保存最终合成的图像
-        print(f"Saving final synthetic images for client {cid}, round {round_num}...")
-        self.save_synthetic_images(
-            synthetic_images.detach().clone(), 
-            synthetic_labels, 
-            cid, 
-            round_num, 
-            'final', 
-            client_classes
-        )
-        
         print(f"Data synthesis completed for client {cid}. Generated {len(synthetic_labels)} synthetic samples for {len(client_classes)} classes.")
         
         return synthetic_images.detach().cpu(), synthetic_labels
@@ -393,78 +338,3 @@ class ProtoDMServer:
         torch.save(self.make_checkpoint(rounds), os.path.join(path, 'model.pt'))
         if include_image:
             raise NotImplementedError('not implement yet')
-
-    def save_synthetic_images(self, images, labels, client_id, round_num, stage, client_classes):
-        """
-        保存合成图像到fakedata文件夹
-        
-        Args:
-            images: 图像tensor, shape: (N, C, H, W)
-            labels: 标签tensor, shape: (N,)
-            client_id: 客户端ID
-            round_num: 轮次
-            stage: 阶段 ('initial' 或 'final')
-            client_classes: 客户端的类别列表
-        """
-        # 创建保存目录
-        save_dir = os.path.join(os.path.dirname(__file__), '../fakedata', 
-                               f'round_{round_num:03d}_client_{client_id}_{stage}')
-        os.makedirs(save_dir, exist_ok=True)
-        
-        # 将图像数据移动到CPU并确保数值范围正确
-        images = images.cpu()
-        labels = labels.cpu()
-        
-        # 标准化图像到 [0, 1] 范围
-        images_norm = images.clone()
-        for i in range(images_norm.size(0)):
-            img = images_norm[i]
-            img_min = img.min()
-            img_max = img.max()
-            if img_max > img_min:
-                images_norm[i] = (img - img_min) / (img_max - img_min)
-        
-        # 按类别保存图像
-        ipc = images.size(0) // len(client_classes) if len(client_classes) > 0 else 0
-        
-        for i, class_label in enumerate(client_classes):
-            start_idx = i * ipc
-            end_idx = min((i + 1) * ipc, images.size(0))
-            
-            class_images = images_norm[start_idx:end_idx]
-            class_labels = labels[start_idx:end_idx]
-            
-            if class_images.size(0) > 0:
-                # 保存单个类别的所有图像到一个文件
-                class_save_path = os.path.join(save_dir, f'class_{class_label}.png')
-                
-                # 计算网格布局
-                num_images = class_images.size(0)
-                nrow = min(8, num_images)  # 每行最多8张图片
-                
-                # 保存图像网格
-                vutils.save_image(class_images, class_save_path, 
-                                nrow=nrow, normalize=False, padding=2)
-                
-                print(f"Saved {num_images} {stage} images for class {class_label} to {class_save_path}")
-        
-        # 同时保存所有类别的图像到一个大的网格中
-        all_images_path = os.path.join(save_dir, 'all_classes.png')
-        nrow = min(8, images_norm.size(0))
-        vutils.save_image(images_norm, all_images_path, 
-                         nrow=nrow, normalize=False, padding=2)
-        
-        print(f"Saved all {stage} images to {all_images_path}")
-        
-        # 保存图像和标签的统计信息
-        stats_path = os.path.join(save_dir, 'stats.txt')
-        with open(stats_path, 'w') as f:
-            f.write(f"Round: {round_num}\n")
-            f.write(f"Client ID: {client_id}\n")
-            f.write(f"Stage: {stage}\n")
-            f.write(f"Total images: {images.size(0)}\n")
-            f.write(f"Image shape: {images.shape}\n")
-            f.write(f"Classes: {client_classes}\n")
-            f.write(f"Images per class: {ipc}\n")
-            f.write(f"Label distribution: {torch.bincount(labels).tolist()}\n")
-            f.write(f"Image value range: [{images.min().item():.4f}, {images.max().item():.4f}]\n")

@@ -198,3 +198,10 @@ def ResNet101(channel, num_classes):
 
 def ResNet152(channel, num_classes):
     return ResNet(Bottleneck, [3,8,36,3], channel=channel, num_classes=num_classes)
+def main():
+    # Example usage
+    model = ConvNet(channel=3, num_classes=10, net_width=64, net_depth=3, net_act='relu', net_norm='instancenorm', net_pooling='avgpooling')
+    print(model)
+
+if __name__ == "__main__":
+    main()
