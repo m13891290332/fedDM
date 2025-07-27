@@ -6,3 +6,4 @@ dataset/split_file/
 __pycache__/
 fakedata/
 *.pyc
+*.log

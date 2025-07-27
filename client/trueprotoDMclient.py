@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from dataset.data.dataset import PerLabelDatasetNonIID
 from utils.fedDMutils import sample_random_model, random_pertube
+from utils.trueprotoDMutils import agg_func
 
 
 class ProtoDMClient:
@@ -35,27 +36,31 @@ class ProtoDMClient:
         self.real_batch_size = real_batch_size
 
         self.device = device
+        
+        # 初始化全局proto为空字典
+        self.global_protos = {}
 
     def prepare_synthesis_data(self):
         """
-        准备数据合成所需的信息，包括每个类别的真实数据特征和统计信息
-        返回给服务器用于数据合成的信息
+        准备数据合成所需的信息，基于trueprotoDMupdate算法获取proto（原型）
+        返回给服务器用于数据合成的proto信息
         """
         synthesis_info = {
             'cid': self.cid,
             'classes': self.classes,
             'ipc': self.ipc,
-            'real_features': {},
-            'real_logits': {},
-            'class_statistics': {},
+            'protos': {},  # 存储每个类别的proto原型
             'sample_images': {}
         }
 
-        # 使用扰动后的模型来提取特征
+        # 使用扰动后的模型来提取proto特征，参考trueprotoDMupdate的做法
         sample_model = random_pertube(self.global_model, self.rho)
         sample_model.eval()
 
         with torch.no_grad():
+            # 按类别收集proto，模拟trueprotoDMupdate中的agg_protos_label过程
+            agg_protos_label = {}
+            
             for c in self.classes:
                 # 检查该类别是否有可用样本
                 available_samples = len(self.train_set.indices_class[c])
@@ -63,8 +68,8 @@ class ProtoDMClient:
                     print(f'Client {self.cid} has no samples for class {c}, skipping...')
                     continue
                     
-                # 获取该类别的所有真实图像，确保至少请求1个样本
-                num_samples = max(1, min(self.real_batch_size * 10, available_samples))  # 增加样本数量
+                # 获取该类别的真实图像，参考trueprotoDMupdate中batch处理的方式
+                num_samples = max(1, min(self.real_batch_size * 5, available_samples))
                 real_images = self.train_set.get_images(c, num_samples)
                 real_images = real_images.to(self.device)
                 
@@ -73,40 +78,46 @@ class ProtoDMClient:
                     print(f'Client {self.cid} got empty tensor for class {c}, skipping...')
                     continue
                 
-                # 提取特征和logits
-                real_features = sample_model.embed(real_images)
-                real_logits = sample_model(real_images)
+                # 提取proto特征，参考trueprotoDMupdate: log_probs, protos = model(images)
+                # 使用train=True模式获取特征表示和预测结果
+                protos, log_probs = sample_model(real_images, train=True)
                 
-                # 计算统计信息
-                synthesis_info['real_features'][c] = {
-                    'mean': torch.mean(real_features, dim=0).cpu(),
-                    'std': torch.std(real_features, dim=0).cpu(),
-                    'samples': real_features[:min(self.real_batch_size * 2, real_features.size(0))].cpu()  # 保存更多样本特征
-                }
+                # 如果有全局proto，应用proto距离约束，参考trueprotoDMupdate中的loss2计算
+                if len(self.global_protos) > 0 and c in self.global_protos:
+                    # 参考trueprotoDMupdate中的proto距离损失处理
+                    proto_new = copy.deepcopy(protos.data)
+                    for i in range(protos.size(0)):
+                        proto_new[i, :] = self.global_protos[c][0].data
+                    
+                    # 计算proto距离，但这里我们只记录，不反向传播（因为是no_grad）
+                    proto_distance = torch.mean((proto_new - protos) ** 2)
+                    print(f'Client {self.cid} class {c} proto distance to global: {proto_distance.item():.4f}')
                 
-                synthesis_info['real_logits'][c] = {
-                    'mean': torch.mean(real_logits, dim=0).cpu(),
-                    'std': torch.std(real_logits, dim=0).cpu(),
-                    'samples': real_logits[:min(self.real_batch_size * 2, real_logits.size(0))].cpu()  # 保存更多样本logits
-                }
+                # 按照trueprotoDMupdate的方式收集每个样本的proto
+                for i in range(protos.size(0)):
+                    if c in agg_protos_label:
+                        agg_protos_label[c].append(protos[i,:])
+                    else:
+                        agg_protos_label[c] = [protos[i,:]]
                 
-                # 保存一些原始图像作为初始化参考（模拟 avg=False 行为）
+                # 保存一些原始图像作为初始化参考
                 synthesis_info['sample_images'][c] = self.train_set.get_images(c, self.ipc, avg=False).cpu()
-                
-                # 类别统计信息
-                synthesis_info['class_statistics'][c] = {
-                    'num_samples': len(self.train_set.indices_class[c]),
-                    'data_mean': torch.mean(real_images, dim=[0, 2, 3]).cpu(),
-                    'data_std': torch.std(real_images, dim=[0, 2, 3]).cpu()
-                }
 
-        print(f'Client {self.cid} prepared synthesis info for classes {self.classes}')
+            # 使用agg_func聚合proto，参考trueprotoDMupdate中的处理方式
+            aggregated_protos = agg_func(agg_protos_label)
+            synthesis_info['protos'] = aggregated_protos
+
+        print(f'Client {self.cid} prepared proto synthesis info for classes {list(aggregated_protos.keys())}')
         return synthesis_info
 
-    def receive_model(self, global_model):
-        """接收全局模型"""
+    def receive_model(self, global_model, global_protos=None):
+        """接收全局模型和全局proto"""
         self.global_model = copy.deepcopy(global_model)
         self.global_model.eval()
+        
+        if global_protos is not None:
+            self.global_protos = global_protos
+            print(f'Client {self.cid} received global protos for classes: {list(global_protos.keys())}')
 
     def compute_gradients(self):
         """

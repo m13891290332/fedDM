@@ -193,7 +193,7 @@ class ProtoDMServer:
         ipc = client_info['ipc']
         total_synthetic_images = len(client_classes) * ipc
         
-        # 初始化合成图像
+        # 初始化合成图像 - 使用标准正态分布N(0,1)
         synthetic_images = torch.randn(
             size=(
                 total_synthetic_images,
@@ -218,31 +218,19 @@ class ProtoDMServer:
                     num_samples = min(ipc, sample_images.size(0))
                     # 确保使用 avg=False 的方式初始化（与 fedDMclient 保持一致）
                     synthetic_images.data[start_idx:start_idx+num_samples] = sample_images[:num_samples].to(self.device)
-                    # 如果样本数量不足，用随机扰动填充剩余部分
+                    # 如果样本数量不足，用标准正态分布N(0,1)填充剩余部分
                     if num_samples < ipc:
                         remaining = ipc - num_samples
-                        base_sample = sample_images[0:1].to(self.device) if sample_images.size(0) > 0 else synthetic_images[start_idx:start_idx+1]
-                        for j in range(remaining):
-                            noise = torch.randn_like(base_sample) * 0.1
-                            synthetic_images.data[start_idx+num_samples+j:start_idx+num_samples+j+1] = base_sample + noise
+                        # 使用标准正态分布N(0,1)初始化剩余的合成图像
+                        remaining_shape = (remaining, self.dataset_info['channel'], 
+                                         self.dataset_info['im_size'][0], self.dataset_info['im_size'][1])
+                        remaining_images = torch.randn(remaining_shape, device=self.device, dtype=torch.float)
+                        synthetic_images.data[start_idx+num_samples:start_idx+num_samples+remaining] = remaining_images
             print(f"Client {cid}: Using real sample initialization")
         elif self.init_method == "random":
-            # 保持随机初始化，可以选择性地使用数据统计信息进行标准化
-            for i, c in enumerate(client_classes):
-                start_idx = i * ipc
-                end_idx = (i + 1) * ipc
-                
-                # 可选：使用类别统计信息对随机初始化进行标准化
-                if c in client_info['class_statistics']:
-                    class_stats = client_info['class_statistics'][c]
-                    data_mean = class_stats['data_mean'].to(self.device)
-                    data_std = class_stats['data_std'].to(self.device)
-                    
-                    # 标准化随机噪声到接近真实数据的分布
-                    class_images = synthetic_images[start_idx:end_idx]
-                    class_images = class_images * data_std.view(1, -1, 1, 1) + data_mean.view(1, -1, 1, 1)
-                    synthetic_images.data[start_idx:end_idx] = class_images
-            print(f"Client {cid}: Using random initialization with distribution matching")
+            # 保持标准正态分布N(0,1)随机初始化，不进行任何调整
+            # synthetic_images已经通过torch.randn初始化为标准正态分布N(0,1)
+            print(f"Client {cid}: Using standard normal distribution N(0,1) random initialization")
         else:
             raise ValueError(f"Unknown initialization method: {self.init_method}")
 

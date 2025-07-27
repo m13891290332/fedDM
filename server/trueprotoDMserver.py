@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from utils.fedDMutils import random_pertube
+from utils.trueprotoDMutils import proto_aggregation
 
 
 class ProtoDMServer:
@@ -55,6 +56,9 @@ class ProtoDMServer:
 
         self.model_identification = model_identification
         self.dataset_info = dataset_info
+        
+        # 添加全局proto管理，参考trueprotoDMmain中的global_protos
+        self.global_protos = {}
 
     def fit(self):
         evaluate_acc = 0
@@ -76,13 +80,13 @@ class ProtoDMServer:
             
             client_synthesis_info = []
             for client in selected_clients:
-                client.receive_model(self.global_model)
+                client.receive_model(self.global_model, self.global_protos)
                 synthesis_info = client.prepare_synthesis_data()
-                # 只有当客户端实际有数据时才添加到列表中
-                if synthesis_info['real_features']:  # 检查是否有任何类别的特征
+                # 只有当客户端实际有proto数据时才添加到列表中
+                if synthesis_info['protos']:  # 检查是否有任何类别的proto
                     client_synthesis_info.append(synthesis_info)
                 else:
-                    print(f'Client {client.cid} has no valid data for synthesis, skipping...')
+                    print(f'Client {client.cid} has no valid proto data for synthesis, skipping...')
 
             print('---------- server-side data synthesis ----------')
             
@@ -112,6 +116,16 @@ class ProtoDMServer:
             # 聚合所有客户端的合成数据
             synthetic_data = torch.cat(all_synthetic_data, dim=0).cpu()
             synthetic_labels = torch.cat(all_synthetic_labels, dim=0)
+            
+            # 聚合客户端的proto，参考trueprotoDMmain中的proto_aggregation
+            print('---------- aggregating client protos ----------')
+            local_protos_list = {}
+            for idx, client_info in enumerate(client_synthesis_info):
+                local_protos_list[idx] = client_info['protos']
+            
+            # 使用proto_aggregation函数聚合全局proto
+            self.global_protos = proto_aggregation(local_protos_list)
+            print(f'Global protos updated for classes: {list(self.global_protos.keys())}')
 
             print('---------- update global model ----------')
 
@@ -156,14 +170,15 @@ class ProtoDMServer:
 
     def synthesize_data_for_client(self, client_info: Dict):
         """
-        为单个客户端合成数据
+        为单个客户端合成数据，基于proto原型进行合成
+        参考trueprotoDMupdate算法中的proto距离损失
         """
         cid = client_info['cid']
-        print(f"Starting data synthesis for client {cid}...")
+        print(f"Starting proto-based data synthesis for client {cid}...")
         
-        # 检查客户端是否有有效的特征数据
-        if not client_info['real_features']:
-            print(f"Client {cid} has no valid features for synthesis")
+        # 检查客户端是否有有效的proto数据
+        if not client_info['protos']:
+            print(f"Client {cid} has no valid protos for synthesis")
             # 返回空的合成数据
             empty_data = torch.zeros((0, self.dataset_info['channel'], 
                                     self.dataset_info['im_size'][0], 
@@ -172,7 +187,7 @@ class ProtoDMServer:
             return empty_data, empty_labels
         
         # 获取客户端的类别信息
-        client_classes = [c for c in client_info['classes'] if c in client_info['real_features']]
+        client_classes = list(client_info['protos'].keys())
         
         if not client_classes:
             print(f"Client {cid} has no classes available for synthesis")
@@ -209,7 +224,6 @@ class ProtoDMServer:
             if c in client_info['sample_images']:
                 sample_images = client_info['sample_images'][c]
                 num_samples = min(ipc, sample_images.size(0))
-                # 确保使用 avg=False 的方式初始化（与 fedDMclient 保持一致）
                 synthetic_images.data[start_idx:start_idx+num_samples] = sample_images[:num_samples].to(self.device)
                 # 如果样本数量不足，用随机扰动填充剩余部分
                 if num_samples < ipc:
@@ -222,9 +236,9 @@ class ProtoDMServer:
         # 设置优化器
         optimizer_image = torch.optim.SGD([synthetic_images], lr=self.image_lr, momentum=0.5, weight_decay=0)
         
-        # 数据合成迭代
+        # 数据合成迭代，基于proto距离损失
         for dc_iteration in range(self.dc_iterations):
-            # 使用扰动模型
+            # 使用扰动模型，参考trueprotoDMupdate
             sample_model = random_pertube(self.global_model, self.rho)
             sample_model.eval()
             
@@ -239,55 +253,32 @@ class ProtoDMServer:
                     (ipc, self.dataset_info['channel'], 
                      self.dataset_info['im_size'][0], self.dataset_info['im_size'][1]))
                 
-                # 计算合成图像的特征和logits
-                synthetic_features = sample_model.embed(synthetic_images_class)
-                synthetic_logits = sample_model(synthetic_images_class)
+                # 计算合成图像的proto特征，参考trueprotoDMupdate: log_probs, protos = model(images)
+                synthetic_protos, log_probs = sample_model(synthetic_images_class, train=True)
                 
-                # 与客户端的该类别真实数据进行匹配
-                if c in client_info['real_features'] and c in client_info['real_logits']:
-                    # 使用真实样本特征进行更精确的匹配
-                    if 'samples' in client_info['real_features'][c] and client_info['real_features'][c]['samples'].size(0) > 0:
-                        # 使用实际的真实样本特征，而不只是均值
-                        real_feature_samples = client_info['real_features'][c]['samples'].to(self.device)
-                        real_logits_samples = client_info['real_logits'][c]['samples'].to(self.device)
-                        
-                        # 模拟 fedDMclient 的随机采样行为
-                        if real_feature_samples.size(0) > 1:
-                            # 随机选择一个子集进行匹配，模拟 real_batch_size 的效果
-                            batch_size = min(real_feature_samples.size(0), max(1, real_feature_samples.size(0) // 2))
-                            indices = torch.randperm(real_feature_samples.size(0))[:batch_size]
-                            sampled_features = real_feature_samples[indices]
-                            sampled_logits = real_logits_samples[indices]
-                        else:
-                            sampled_features = real_feature_samples
-                            sampled_logits = real_logits_samples
-                        
-                        # 计算真实样本的均值
-                        real_feature_mean = torch.mean(sampled_features, dim=0).detach()
-                        real_logits_mean = torch.mean(sampled_logits, dim=0).detach()
-                        
-                        # 特征匹配损失
-                        synthetic_feature_mean = torch.mean(synthetic_features, dim=0)
-                        total_loss += torch.sum((real_feature_mean - synthetic_feature_mean)**2)
-                        
-                        # Logits匹配损失
-                        synthetic_logits_mean = torch.mean(synthetic_logits, dim=0)
-                        total_loss += torch.sum((real_logits_mean - synthetic_logits_mean)**2)
-                        
-                        # 添加特征分布匹配损失（增强数据质量）
-                        if sampled_features.size(0) > 1 and synthetic_features.size(0) > 1:
-                            real_feature_std = torch.std(sampled_features, dim=0)
-                            synthetic_feature_std = torch.std(synthetic_features, dim=0)
-                            total_loss += 0.1 * torch.sum((real_feature_std - synthetic_feature_std)**2)
-                    else:
-                        # 回退到预计算的均值（如果没有样本数据）
-                        target_feature_mean = client_info['real_features'][c]['mean'].to(self.device)
-                        synthetic_feature_mean = torch.mean(synthetic_features, dim=0)
-                        total_loss += torch.sum((target_feature_mean - synthetic_feature_mean)**2)
-                        
-                        target_logits_mean = client_info['real_logits'][c]['mean'].to(self.device)
-                        synthetic_logits_mean = torch.mean(synthetic_logits, dim=0)
-                        total_loss += torch.sum((target_logits_mean - synthetic_logits_mean)**2)
+                # 获取客户端该类别的目标proto
+                target_proto = client_info['protos'][c].to(self.device)
+                
+                # 计算proto距离损失，参考trueprotoDMupdate中的loss2计算方式
+                # 模拟trueprotoDMupdate中: loss2 = loss_mse(proto_new, protos)
+                loss_mse = nn.MSELoss()
+                
+                # 为每个合成图像计算与目标proto的距离损失
+                proto_loss = torch.tensor(0.0).to(self.device)
+                for j in range(synthetic_protos.size(0)):
+                    proto_loss += loss_mse(synthetic_protos[j], target_proto)
+                
+                total_loss += proto_loss / synthetic_protos.size(0)  # 平均化损失
+                
+                # 如果有全局proto，也添加全局约束
+                if hasattr(self, 'global_protos') and len(self.global_protos) > 0 and c in self.global_protos:
+                    global_target_proto = self.global_protos[c][0].to(self.device)
+                    global_proto_loss = torch.tensor(0.0).to(self.device)
+                    for j in range(synthetic_protos.size(0)):
+                        global_proto_loss += loss_mse(synthetic_protos[j], global_target_proto)
+                    
+                    # 添加全局proto约束，权重较小
+                    total_loss += 0.5 * global_proto_loss / synthetic_protos.size(0)
             
             # 更新合成图像
             optimizer_image.zero_grad()
@@ -295,7 +286,7 @@ class ProtoDMServer:
             optimizer_image.step()
             
             if dc_iteration % 100 == 0:
-                print(f'Client {cid} data synthesis iteration {dc_iteration}, total loss = {total_loss.item()}')
+                print(f'Client {cid} proto-based synthesis iteration {dc_iteration}, total loss = {total_loss.item()}')
         
         # 准备返回数据
         synthetic_labels = []
@@ -304,7 +295,7 @@ class ProtoDMServer:
         
         synthetic_labels = torch.tensor(synthetic_labels, dtype=torch.long)
         
-        print(f"Data synthesis completed for client {cid}. Generated {len(synthetic_labels)} synthetic samples for {len(client_classes)} classes.")
+        print(f"Proto-based data synthesis completed for client {cid}. Generated {len(synthetic_labels)} synthetic samples for {len(client_classes)} classes.")
         
         return synthetic_images.detach().cpu(), synthetic_labels
 
