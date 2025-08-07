@@ -10,7 +10,7 @@ from datetime import datetime
 import torch
 import wandb
 from torch.utils.data import Subset
-
+from models.fedMKmodels import LeNet
 from client.fedDMclient import Client
 from client.fedprotoDMclient import ProtoDMClient
 from client.trueprotoDMclient import ProtoDMClient as TrueProtoDMClient
@@ -21,7 +21,31 @@ from config import parser
 from dataset.data.dataset import get_dataset, PerLabelDatasetNonIID
 from models.fedDMmodels import ResNet18, ConvNet
 from utils.fedDMutils import setup_seed
-
+from server.fedMKserver import FedMKServer
+from client.fedMKclient import FedMKClient
+def get_model(args, dataset_info):
+    if args.model == "ConvNet":
+        return ConvNet(
+            channel=dataset_info['channel'],
+            num_classes=dataset_info['num_classes'],
+            net_width=128,
+            net_depth=3,
+            net_act='relu',
+            net_norm='instancenorm',
+            net_pooling='avgpooling',
+            im_size=dataset_info['im_size']
+        )
+    elif args.model == "ResNet":
+        return ResNet18(
+            channel=dataset_info['channel'],
+            num_classes=dataset_info['num_classes']
+        )
+    elif args.model == "LeNet":
+        return LeNet(
+            num_classes=dataset_info['num_classes']
+        )
+    else:
+        raise NotImplementedError("only support ConvNet, ResNet and LeNet")
 def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = "0 , 1 , 2 , 3"
     args = parser.parse_args()
@@ -29,7 +53,7 @@ def main():
     # 设置日志
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_filename = f"{current_time}_{args.algorithm}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients_{args.partition_method}partition_{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs_cr{args.communication_rounds}_init{args.init_method}.log"
-    log_dir = "/home/MaCS/fedDM/log"
+    log_dir = "/home/ChenXY/fedDM-main/log"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, log_filename)
     
@@ -147,14 +171,20 @@ def main():
             net_norm='instancenorm',
             net_pooling='avgpooling',
             im_size=dataset_info['im_size']
-        )
+        ).to(device)  # 确保模型在正确的设备上
     elif args.model == "ResNet":
         global_model = ResNet18(
             channel=dataset_info['channel'],
             num_classes=dataset_info['num_classes']
-        )
+        ).to(device)  # 确保模型在正确的设备上
+    elif args.model == "LeNet":  # 新增LeNet分支
+        from models.fedMKmodels import LeNet
+        global_model = LeNet(
+            num_classes=dataset_info['num_classes']
+        ).to(device)  # 确保模型在正确的设备上
     else:
-        raise NotImplemented("only support ConvNet and ResNet")
+        raise NotImplementedError("only support ConvNet, ResNet and LeNet")
+
 
     # init server and clients
     model_identification = f'{args.algorithm}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients/{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs'
@@ -192,7 +222,24 @@ def main():
             device=device,
             model_identification=model_identification,
         )
-        
+    elif args.algorithm == 'fedMK':
+        # 新算法：初始化FedMK服务器
+        server = FedMKServer(
+            global_model=global_model,
+            num_classes=dataset_info['num_classes'],
+            device=device
+        )
+        # 初始化FedMK客户端
+        clients = []
+        for client_id in range(args.client_num):
+            client = FedMKClient(
+                client_id=client_id,
+                local_data=train_sets[client_id],  # 传入每个客户端的数据子集
+                device=device,
+                dataset_info=dataset_info  # 添加数据集信息
+            )
+            clients.append(client)
+ 
     elif args.algorithm == "fedprotoDM":
         # fedprotoDM实现
         client_list = [ProtoDMClient(
@@ -274,7 +321,12 @@ def main():
 
     # fit the model
     logging.info(f"Starting {args.algorithm} model training...")
-    server.fit()
+
+    if args.algorithm == 'fedMK':
+        server.clients = clients  # 将客户端列表传递给服务器
+        server.fit(communication_rounds=args.communication_rounds, test_loader=test_loader)
+    else:
+        server.fit()
     logging.info(f"{args.algorithm} model training completed.")
 
 if __name__ == "__main__":
