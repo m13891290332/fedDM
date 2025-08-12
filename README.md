@@ -26,7 +26,8 @@ python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --i
 测试
 python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50  --partition_method only --algorithm protoDM --communication_rounds 20 --device cuda:3 --init_method random
 }
-
+测试FedMK
+python main.py --model LeNet --dataset CIFAR10 --client_num 10 --alpha 1 --model_epochs 10 --partition_method only --algorithm fedMK
 
 
 后台运行、查看、终止的常见命令：{

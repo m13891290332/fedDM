@@ -9,7 +9,7 @@ from log.logger import logger
 
 class FedMKClient:
     def __init__(self, client_id, local_data, num_classes=10, device='cuda', 
-                round_num=0, personal_hist_data=None, knowledge_pool=None):
+                round_num=0, personal_hist_data=None, knowledge_pool=None, dataset_info=None):
         self.client_id = client_id
         self.local_data = local_data
         self.num_classes = num_classes
@@ -20,6 +20,7 @@ class FedMKClient:
         self.distilled_data = None
         self.distilled_labels = None
         self.tau = 5.0
+        self.dataset_info = dataset_info  # 新增，用于存储数据集信息
 
     def _init_distilled_data(self):
         """支持条件初始化：第一轮从本地数据，后续从其他客户端元知识"""
@@ -85,7 +86,31 @@ class FedMKClient:
         original_state = {k: v.clone() for k, v in global_model.state_dict().items()}
 
         # === 内层优化 ===
-        inner_model = type(global_model)(num_classes=self.num_classes).to(self.device)
+        # 根据全局模型类型创建新实例
+        model_class = type(global_model)
+        if model_class.__name__ == 'ConvNet':
+            inner_model = model_class(
+                channel=self.dataset_info['channel'],
+                num_classes=self.num_classes,
+                net_width=128,
+                net_depth=3,
+                net_act='relu',
+                net_norm='instancenorm',
+                net_pooling='avgpooling',
+                im_size=self.dataset_info['im_size']
+            ).to(self.device)
+        elif model_class.__name__ == 'ResNet18':
+            inner_model = model_class(
+                channel=self.dataset_info['channel'],
+                num_classes=self.num_classes
+            ).to(self.device)
+        elif model_class.__name__ == 'LeNet':
+            inner_model = model_class(
+                num_classes=self.num_classes
+            ).to(self.device)
+        else:
+            raise NotImplementedError(f"Unsupported model type: {model_class.__name__}")
+            
         inner_model.load_state_dict(global_model.state_dict())
         inner_optimizer = Adam(inner_model.parameters(), lr=0.1)
 
@@ -95,7 +120,7 @@ class FedMKClient:
             inner_optimizer.zero_grad()
             loss_inner.backward()
             inner_optimizer.step()
-        print(f"Client {self.client_id} inner_Loss: {loss_inner:.4f}")
+        logger.info(f"Client {self.client_id} inner_Loss: {loss_inner:.4f}")
 
         # === 外层优化 ===
         # 重新创建 distilled_data 为叶子节点
@@ -115,7 +140,7 @@ class FedMKClient:
                 (torch.mean(weights * losses) + 1e-4 * torch.norm(distilled_data_clone)).backward()
                 total_loss += torch.mean(weights * losses).item()
             outer_optimizer.step()
-        print(f"Client {self.client_id} Outer Loss: {total_loss:.4f}")
+        logger.info(f"Client {self.client_id} Outer Loss: {total_loss:.4f}")
 
         # 恢复全局模型参数
         global_model.load_state_dict(original_state)
