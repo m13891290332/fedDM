@@ -21,16 +21,16 @@ main.py是主函数
 python dataset/data/dataset_partition.py --dataset CIFAR10 --client_num 50 --alpha 0.1 --dataset_root datasets/torchvision
 
 main.py方式运行（推荐）（设置使用哪个gpu的环境变量在main.py中修改）
-python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 500  --partition_method part --algorithm fedprotoDM
+python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 500  --partition_method part --algorithm protoDM
 
 测试
-python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50  --partition_method only --algorithm fedprotoDM --communication_rounds 20 --device cuda:3 --init_method random
+python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50  --partition_method only --algorithm protoDM --communication_rounds 20 --device cuda:3 --init_method random
 }
 
 
 
 后台运行、查看、终止的常见命令：{
-nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1 --model_epochs 15  --partition_method only --algorithm trueprotoDM --communication_rounds 20 --device cuda:0 > app.log 2>&1 &
+nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50  --partition_method only --algorithm protoDM --communication_rounds 20 --init_method random --device cuda:1 > protoweight_random.log 2>&1 &
 ps -ef | grep MaCS
 kill
 tail -n 200 -f app.log

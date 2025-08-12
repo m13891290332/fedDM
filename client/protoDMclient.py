@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from dataset.data.dataset import PerLabelDatasetNonIID
 from utils.fedDMutils import sample_random_model, random_pertube
-from utils.trueprotoDMutils import agg_func
+from utils.protoDMutils import agg_func
 
 
 class ProtoDMClient:
@@ -69,7 +69,9 @@ class ProtoDMClient:
                     continue
                     
                 # 获取该类别的真实图像，参考trueprotoDMupdate中batch处理的方式
-                num_samples = max(1, min(self.real_batch_size * 5, available_samples))
+                # 动态调整样本数量，确保有足够的代表性
+                min_samples = max(5, self.real_batch_size)  # 至少5个样本
+                num_samples = min(min_samples * 3, available_samples, 50)  # 最多50个样本
                 real_images = self.train_set.get_images(c, num_samples)
                 real_images = real_images.to(self.device)
                 
@@ -78,30 +80,41 @@ class ProtoDMClient:
                     print(f'Client {self.cid} got empty tensor for class {c}, skipping...')
                     continue
                 
-                # 提取proto特征，参考trueprotoDMupdate: log_probs, protos = model(images)
-                # 使用train=True模式获取特征表示和预测结果
-                protos, log_probs = sample_model(real_images, train=True)
+                # 分批处理以避免内存问题
+                batch_size = min(16, real_images.size(0))
+                all_protos = []
+                
+                for start_idx in range(0, real_images.size(0), batch_size):
+                    end_idx = min(start_idx + batch_size, real_images.size(0))
+                    batch_images = real_images[start_idx:end_idx]
+                    
+                    # 提取proto特征，参考trueprotoDMupdate: log_probs, protos = model(images)
+                    # 使用train=True模式获取特征表示和预测结果
+                    protos, log_probs = sample_model(batch_images, train=True)
+                    
+                    # 收集所有proto
+                    for i in range(protos.size(0)):
+                        all_protos.append(protos[i,:])
                 
                 # 如果有全局proto，应用proto距离约束，参考trueprotoDMupdate中的loss2计算
                 if len(self.global_protos) > 0 and c in self.global_protos:
-                    # 参考trueprotoDMupdate中的proto距离损失处理
-                    proto_new = copy.deepcopy(protos.data)
-                    for i in range(protos.size(0)):
-                        proto_new[i, :] = self.global_protos[c][0].data
-                    
-                    # 计算proto距离，但这里我们只记录，不反向传播（因为是no_grad）
-                    proto_distance = torch.mean((proto_new - protos) ** 2)
-                    print(f'Client {self.cid} class {c} proto distance to global: {proto_distance.item():.4f}')
+                    # 计算当前客户端proto与全局proto的距离，用于监控
+                    if all_protos:
+                        avg_local_proto = torch.stack(all_protos).mean(dim=0)
+                        proto_distance = torch.mean((self.global_protos[c][0] - avg_local_proto) ** 2)
+                        print(f'Client {self.cid} class {c} proto distance to global: {proto_distance.item():.4f}')
                 
                 # 按照trueprotoDMupdate的方式收集每个样本的proto
-                for i in range(protos.size(0)):
-                    if c in agg_protos_label:
-                        agg_protos_label[c].append(protos[i,:])
-                    else:
-                        agg_protos_label[c] = [protos[i,:]]
+                agg_protos_label[c] = all_protos
                 
-                # 保存一些原始图像作为初始化参考
-                synthesis_info['sample_images'][c] = self.train_set.get_images(c, self.ipc, avg=False).cpu()
+                # 保存一些原始图像作为初始化参考，选择多样性更好的样本
+                if available_samples >= self.ipc:
+                    synthesis_info['sample_images'][c] = self.train_set.get_images(c, self.ipc, avg=False).cpu()
+                else:
+                    # 如果样本不足，使用所有可用样本并重复到足够数量
+                    available_imgs = self.train_set.get_images(c, available_samples, avg=False).cpu()
+                    repeated_imgs = available_imgs.repeat((self.ipc // available_samples + 1, 1, 1, 1))[:self.ipc]
+                    synthesis_info['sample_images'][c] = repeated_imgs
 
             # 使用agg_func聚合proto，参考trueprotoDMupdate中的处理方式
             aggregated_protos = agg_func(agg_protos_label)
