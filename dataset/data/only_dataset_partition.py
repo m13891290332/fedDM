@@ -30,8 +30,20 @@ def partition(args):
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])
         dataset = datasets.CIFAR100(args.dataset_root, train=True, download=True, transform=transform)  # no augmentation
         class_names = dataset.classes
+    elif args.dataset == 'TinyImageNet':
+        num_classes = 200
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+        transform = transforms.Compose([
+            transforms.Resize(64),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)
+        ])
+        dataset_path = os.path.join(args.dataset_root, 'tiny-imagenet-200')
+        dataset = datasets.ImageFolder(root=os.path.join(dataset_path, 'train'), transform=transform)
+        class_names = dataset.classes
     else:
-        exit(f'unknown dataset: f{args.dataset}')
+        exit(f'unknown dataset: {args.dataset}')
 
     K = num_classes
     labels = np.array(dataset.targets, dtype='int64')
