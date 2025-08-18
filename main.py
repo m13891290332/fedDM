@@ -15,9 +15,13 @@ from models.fedMKmodels import LeNet
 from client.fedDMclient import Client
 from client.serverDMclient import ProtoDMClient
 from client.protoDMclient import ProtoDMClient as TrueProtoDMClient
+from client.numprotoDMclient import ProtoDMClient as NumProtoDMClient
+from client.fednumclient import FedNumClient
 from server.fedDMserver import Server
 from server.serverDMserver import ProtoDMServer
 from server.protoDMserver import ProtoDMServer as TrueProtoDMServer
+from server.numprotoDMserver import ProtoDMServer as NumProtoDMServer
+from server.fednumserver import FedNumServer
 from config import parser
 from dataset.data.dataset import get_dataset, PerLabelDatasetNonIID
 from models.fedDMmodels import ResNet18, ConvNet
@@ -54,7 +58,7 @@ def main():
     # 设置日志
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_filename = f"{current_time}_{args.algorithm}_{args.dataset}_alpha{args.alpha}_{args.client_num}clients_{args.partition_method}partition_{args.model}_{args.ipc}ipc_{args.dc_iterations}dc_{args.model_epochs}epochs_cr{args.communication_rounds}_init{args.init_method}.log"
-    log_dir = "/home/ChenXY/fedDM-main/log"
+    log_dir = "/home/MaCS/fedDM/log"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, log_filename)
     
@@ -208,6 +212,7 @@ def main():
             real_batch_size=args.dc_batch_size,
             image_lr=args.image_lr,
             device=device,
+            init_method=args.init_method,
         ) for i in range(args.client_num)]
 
         server = Server(
@@ -315,6 +320,84 @@ def main():
             model_identification=model_identification,
             dataset_info=dataset_info,
             init_method=args.init_method,
+        )
+    elif args.algorithm == "numprotoDM":
+        # numprotoDM实现 (数值原型联邦学习)
+        client_list = [NumProtoDMClient(
+            cid=i,  # 新的连续ID
+            train_set=PerLabelDatasetNonIID(
+                train_sets[i],
+                client_classes[i],
+                dataset_info['channel'],
+                device,
+            ),
+            classes=client_classes[i],
+            dataset_info=dataset_info,
+            ipc=args.ipc,
+            rho=args.rho,
+            dc_iterations=args.dc_iterations,
+            real_batch_size=args.dc_batch_size,
+            batch_num=args.batch_num,
+            device=device,
+        ) for i in range(args.client_num)]
+
+        server = NumProtoDMServer(
+            global_model=global_model,
+            clients=client_list,
+            communication_rounds=args.communication_rounds,
+            join_ratio=args.join_ratio,
+            batch_size=args.batch_size,
+            model_epochs=args.model_epochs,
+            dc_iterations=args.dc_iterations,
+            image_lr=args.image_lr,
+            rho=args.rho,
+            batch_num=args.batch_num,
+            eval_gap=args.eval_gap,
+            test_set=test_set,
+            test_loader=test_loader,
+            device=device,
+            model_identification=model_identification,
+            dataset_info=dataset_info,
+            init_method=args.init_method,
+        )
+    elif args.algorithm == "fednum":
+        # fednum实现 (基于数值平均的联邦学习)
+        client_list = [FedNumClient(
+            cid=i,
+            train_set=PerLabelDatasetNonIID(
+                train_sets[i],
+                client_classes[i],
+                dataset_info['channel'],
+                device,
+            ),
+            classes=client_classes[i],
+            dataset_info=dataset_info,
+            ipc=args.ipc,
+            rho=args.rho,
+            avg_num=args.avg_num,
+            device=device,
+        ) for i in range(args.client_num)]
+
+        server = FedNumServer(
+            global_model=global_model,
+            clients=client_list,
+            communication_rounds=args.communication_rounds,
+            join_ratio=args.join_ratio,
+            batch_size=args.batch_size,
+            model_epochs=args.model_epochs,
+            ipc=args.ipc,
+            rho=args.rho,
+            avg_num=args.avg_num,
+            batch_num=args.batch_num,
+            dc_iterations=args.dc_iterations,
+            image_lr=args.image_lr,
+            init_method=args.init_method,  # 添加初始化方法参数
+            eval_gap=args.eval_gap,
+            test_set=test_set,
+            test_loader=test_loader,
+            device=device,
+            model_identification=model_identification,
+            dataset_info=dataset_info,
         )
     else:
         raise ValueError(f"Unknown algorithm: {args.algorithm}")

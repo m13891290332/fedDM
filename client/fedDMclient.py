@@ -23,6 +23,8 @@ class Client:
         real_batch_size: int,
         image_lr: float,
         device: torch.device,
+        # --- initialization method ---
+        init_method: str = "real_sample",
     ):
         self.cid = cid
 
@@ -35,6 +37,7 @@ class Client:
         self.dc_iterations = dc_iterations
         self.real_batch_size = real_batch_size
         self.image_lr = image_lr
+        self.init_method = init_method
 
         self.device = device
 
@@ -51,9 +54,17 @@ class Client:
         )
 
     def train(self):
-        # initialize S_k from real examples and initialize optimizer
-        for i, c in enumerate(self.classes):
-            self.synthetic_images.data[i * self.ipc : (i + 1) * self.ipc] = self.train_set.get_images(c, self.ipc, avg=False).detach().data
+        # initialize S_k based on initialization method
+        if self.init_method == "real_sample":
+            # initialize from real examples (original behavior)
+            for i, c in enumerate(self.classes):
+                self.synthetic_images.data[i * self.ipc : (i + 1) * self.ipc] = self.train_set.get_images(c, self.ipc, avg=False).detach().data
+        elif self.init_method == "random":
+            # keep random initialization (synthetic_images is already randomly initialized in __init__)
+            print(f'Client {self.cid}: Using random initialization for synthetic images')
+        else:
+            raise ValueError(f"Unknown initialization method: {self.init_method}")
+        
         optimizer_image = torch.optim.SGD([self.synthetic_images], lr=self.image_lr, momentum=0.5, weight_decay=0)
         optimizer_image.zero_grad()
 
