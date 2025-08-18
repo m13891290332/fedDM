@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from torchvision import datasets, transforms
-
+import os
 def get_dataset(dataset, dataset_root, batch_size):
     if dataset == 'MNIST':
         channel = 1
@@ -33,9 +33,28 @@ def get_dataset(dataset, dataset_root, batch_size):
         trainset = datasets.CIFAR100(dataset_root, train=True, download=True, transform=transform)  # no augmentation
         testset = datasets.CIFAR100(dataset_root, train=False, download=True, transform=transform)
         class_names = trainset.classes
+    elif dataset == 'TinyImageNet':
+        channel = 3
+        im_size = (64, 64)  # TinyImageNet 图像尺寸为 64x64
+        num_classes = 200
+        mean = [0.4802, 0.4481, 0.3975]  # TinyImageNet 的均值
+        std = [0.2302, 0.2265, 0.2262]   # TinyImageNet 的标准差
+        
+        transform = transforms.Compose([
+            transforms.Resize(64),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)
+        ])
+        
+        # 假设数据集目录结构符合 ImageFolder 的要求
+        trainset = datasets.ImageFolder(root=os.path.join(dataset_root, 'tiny-imagenet-200/train'), 
+                                    transform=transform)
+        testset = datasets.ImageFolder(root=os.path.join(dataset_root, 'tiny-imagenet-200/val'), 
+                                    transform=transform)
+        class_names = [str(c) for c in range(num_classes)]  # 或用实际类别名
     else:
         exit(f'unknown dataset: {dataset}')
-
+    
     dataset_info = {
         'channel': channel,
         'im_size': im_size,
@@ -44,7 +63,7 @@ def get_dataset(dataset, dataset_root, batch_size):
         'mean': mean,
         'std': std,
     }
-
+    
     testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False,
                                                   num_workers=2)  # pin memory
 
