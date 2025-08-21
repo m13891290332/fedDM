@@ -2,7 +2,6 @@ log/
 results/
 wandb/
 datasets/
-dataset/split_file/
 __pycache__/
 fakedata/
 *.pyc
