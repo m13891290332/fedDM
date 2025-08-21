@@ -39,9 +39,8 @@ class FedNumClient:
         获取所有真实数据的特征和logits，并按avg_num进行平均
         返回每个类别的平均特征和平均logits
         """
-        # 使用扰动后的模型来提取特征
-        sample_model = random_pertube(self.global_model, self.rho)
-        sample_model.eval()
+        # 使用全局模型来提取特征
+        self.global_model.eval()
 
         class_avg_features = {}
         class_avg_logits = {}
@@ -67,8 +66,8 @@ class FedNumClient:
                 all_real_images = all_real_images.to(self.device)
 
                 # 提取所有样本的特征和logits
-                all_features = sample_model.embed(all_real_images)
-                all_logits = sample_model(all_real_images)
+                all_features = self.global_model.embed(all_real_images)
+                all_logits = self.global_model(all_real_images)
 
                 # 按avg_num分组并计算平均值
                 num_samples = all_features.size(0)

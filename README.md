@@ -33,7 +33,7 @@ python dataset/data/dataset_partition.py --dataset CIFAR10 --client_num 50 --alp
 
 ### 3. 主程序运行（推荐）
 ```bash
-python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 50 --device cuda:2 --init_method real_sample
+python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 20 --device cuda:2 --init_method real_sample
 ```
 
 ### 5. 测试FedMK算法
@@ -45,8 +45,8 @@ python main.py --model LeNet --dataset CIFAR10 --client_num 10 --alpha 1 --model
 
 ### 后台运行
 ```bash
-nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 50 --device cuda:2 --init_method real_sample > numreal.log 2>&1 &
-nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 50 --device cuda:0 --init_method random > numrandom.log 2>&1 &
+nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 50 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 20 --device cuda:2 --init_method real_sample > numreal50.log 2>&1 &
+nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 50 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 20 --device cuda:3 --init_method random > numrandom50.log 2>&1 &
 ```
 
 ### 查看进程
