@@ -29,7 +29,7 @@ parser.add_argument("--dc_iterations", type=int, default=1000)
 parser.add_argument("--dc_batch_size", type=int, default=256)
 parser.add_argument("--image_lr", type=float, default=1)
 
-parser.add_argument("--init_method", type=str, default="real_sample", choices=['real_sample', 'random'],
+parser.add_argument("--init_method", type=str, default="real_sample", choices=['real_sample', 'random','dm'],
                     help='Initialization method for synthetic images: real_sample (use real samples) or random (use random noise)')
 parser.add_argument("--batch_num", type=int, default=128,
                     help='server上根据随机挑选多个同一类的真实样本的特征和logits来优化该类的合成数据')
