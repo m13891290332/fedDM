@@ -683,8 +683,8 @@ class FedNumServer:
 
         # 步骤3: 数据拼接 - 将每个类别的统计信息拼接成张量
         for c in all_avg_features:
-            all_avg_features[c] = torch.cat(all_avg_features[c], dim=0)
-            all_avg_logits[c] = torch.cat(all_avg_logits[c], dim=0)
+            all_avg_features[c] = torch.cat(all_avg_features[c], dim=0).to(self.device)
+            all_avg_logits[c] = torch.cat(all_avg_logits[c], dim=0).to(self.device)
 
         print(f'Collected averaged features and logits for classes: {list(all_avg_features.keys())}')
 
@@ -730,9 +730,9 @@ class FedNumServer:
                 
                 if sample_size > 0:
                     # 随机选择样本，增加训练的随机性
-                    indices = torch.randperm(available_avg_samples)[:sample_size]
-                    target_avg_features = all_avg_features[c][indices].to(self.device)
-                    target_avg_logits = all_avg_logits[c][indices].to(self.device)
+                    indices = torch.randperm(available_avg_samples, device=self.device)[:sample_size]
+                    target_avg_features = all_avg_features[c][indices]
+                    target_avg_logits = all_avg_logits[c][indices]
 
                     # 步骤5.6: 计算合成数据的统计摘要
                     # 计算当前类别合成数据的平均特征和平均logits
