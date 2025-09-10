@@ -24,7 +24,8 @@ from server.numprotoDMserver import ProtoDMServer as NumProtoDMServer
 from server.fednumserver import FedNumServer
 from config import parser
 from dataset.data.dataset import get_dataset, PerLabelDatasetNonIID
-from models.fedDMmodels import ResNet18, ConvNet
+# from models.fednummodels import ConvNet
+from models.fedDMmodels import ConvNet, ResNet18
 from utils.fedDMutils import setup_seed
 from server.fedMKserver import FedMKServer
 from client.fedMKclient import FedMKClient
@@ -276,6 +277,7 @@ def main():
             dc_iterations=args.dc_iterations,
             image_lr=args.image_lr,
             rho=args.rho,
+            real_batch_size=args.dc_batch_size,  # 添加缺少的real_batch_size参数
             init_method=args.init_method,
             eval_gap=args.eval_gap,
             test_set=test_set,

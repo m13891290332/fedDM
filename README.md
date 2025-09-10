@@ -1,5 +1,7 @@
 # FedDM - 联邦学习项目
 
+> 项目进展与计划请见：`进度文档.md`
+
 ## 文件信息介绍
 
 - `client/` - 保存客户端文件
@@ -26,17 +28,17 @@
 - `datasets/torchvision/`
 
 ### 2. 数据集划分
-先运行数据集划分（如果修改了数据集、客户端数量和alpha参数，必须重新运行一次）：
+先运行数据集划分（如果修改了数据集、客户端数量和alpha参数，必须重新运行一次）（数据集划分与联邦学习是分开的，数据集划分只需运行一次，联邦学习只使用保存的划分结果）：
 ```bash
-python dataset/data/dataset_partition.py --dataset CIFAR10 --client_num 50 --alpha 0.1 --dataset_root datasets/torchvision
+python dataset/data/only_dataset_partition.py --dataset CIFAR10 --client_num 50 --alpha 0.1 --dataset_root datasets/torchvision
 ```
 
-### 3. 主程序运行（推荐）
+### 3. 主程序运行
 ```bash
 python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 20 --device cuda:3 --init_method real_sample
 ```
 
-### 5. 测试FedMK算法
+### 4. 测试FedMK算法
 ```bash
 python main.py --model LeNet --dataset CIFAR10 --client_num 10 --alpha 1 --model_epochs 10 --partition_method only --algorithm fedMK
 ```
@@ -45,7 +47,7 @@ python main.py --model LeNet --dataset CIFAR10 --client_num 10 --alpha 1 --model
 
 ### 后台运行
 ```bash
-nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 10 --dc_iterations 1000 --model_epochs 50 --partition_method only --algorithm fednum --communication_rounds 20 --device cuda:3 --init_method dm > dm-avgl-qj-wess-10.log 2>&1 &
+nohup python main.py --model ConvNet --dataset CIFAR10 --client_num 50 --alpha 0.1 --ipc 50 --dc_iterations 200 --model_epochs 50 --partition_method only --communication_rounds 20 --device cuda:0 --init_method real_sample --algorithm fednum > num-批量+50微调.log 2>&1 &
 ```
 
 ### 查看进程

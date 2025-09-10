@@ -17,12 +17,12 @@ from utils.fedDMutils import random_pertube
 
 class FedNumServer:
     """
-    FedNum算法的服务器端实现
+    FedNum算法的服务器端实现 - 增强版混合优化策略
     
     FedNum服务器的主要职责：
     1. 维护全局模型和全局合成数据集
     2. 协调客户端参与训练过程
-    3. 收集客户端的统计信息（平均特征和logits）
+    3. 收集客户端的统计信息（平均特征、logits和样本数量）
     4. 使用收集到的统计信息更新合成数据
     5. 使用合成数据训练全局模型
     
@@ -31,15 +31,35 @@ class FedNumServer:
     - 训练循环：
       1. 选择参与的客户端
       2. 发送全局模型给客户端
-      3. 收集客户端返回的统计信息
-      4. 使用统计信息通过梯度匹配更新合成数据（使用全局模型保持一致性）
-      5. 使用更新后的合成数据训练全局模型
-      6. 评估模型性能
+      3. 收集客户端返回的统计信息（包含样本数量权重）
+      4. 使用统计信息通过加权梯度匹配更新合成数据（使用全局模型保持一致性）
+      5. **混合优化策略**：
+         - 阶段一：批量更新所有合成数据（全局优化）
+         - 阶段二：个体微调选定的合成图像（局部精细优化）
+      6. 使用更新后的合成数据训练全局模型
+      7. 评估模型性能
+    
+    新增功能：
+    - 支持基于样本数量的权重计算
+    - 两种权重损失计算方式：
+      * weight-loss-avg: 先计算各个损失，再用样本数量加权平均
+      * weight-avg-loss: 先用样本数量加权平均目标特征，再计算损失
+    - **混合优化策略**：
+      * 批量更新：对所有合成数据进行全局优化，建立良好的基础
+      * 个体微调：选择表现较差的合成图像进行精细调整，提升局部细节
+      * 动态学习率：个体微调使用较小学习率和动态调整策略
+      * 早停机制：防止个体微调过拟合，提高优化效率
+    
+    混合优化的优势：
+    - 全局一致性：批量更新确保所有合成数据的整体一致性
+    - 局部精确性：个体微调提升关键合成图像的质量
+    - 自适应选择：智能选择需要微调的图像，提高效率
+    - 防止过拟合：通过正则化和早停机制保持泛化能力
     
     这种方法结合了数据蒸馏和联邦学习的优点：
     - 数据隐私保护：只使用统计信息，不传输原始数据
     - 通信效率：传输压缩的特征统计信息而不是模型参数
-    - 数据质量：通过梯度匹配生成高质量的合成数据
+    - 数据质量：通过混合优化策略生成更高质量的合成数据
     - 模型一致性：使用全局模型确保客户端和服务器端的特征提取完全一致
     """
     def __init__(
@@ -69,7 +89,12 @@ class FedNumServer:
         dataset_info: dict,
         # --- loss configuration ---
         logit_loss_type: str = 'wasserstein',  # logits损失类型: 'wasserstein', 'kl', 'l2'
-        loss_computation: str = 'avg-loss',  # 损失计算方式: 'avg-loss', 'loss-avg'
+        loss_computation: str = 'avg-loss',  # 损失计算方式: 'avg-loss', 'loss-avg', 'weight-loss-avg', 'weight-avg-loss'
+        # --- hybrid optimization strategy ---
+        enable_individual_tuning: bool = True,  # 是否启用个体微调
+        individual_tuning_iterations: int = 50,# 个体微调迭代次数（建议20-100）
+        individual_tuning_lr: float = 0.001,    # 个体微调学习率（建议0.0005-0.005）
+        individual_tuning_ratio: float = 0.3,   # 个体微调时选择的合成图像比例（建议0.2-0.5）
     ):
         # FedNum算法的核心组件初始化
         # 1. 全局模型：用于协调客户端和生成合成数据的共享模型
@@ -91,7 +116,13 @@ class FedNumServer:
         self.image_lr = image_lr  # 合成图像的学习率
         self.init_method = init_method  # 合成数据初始化方法('random', 'real_sample', 'dm')
         self.logit_loss_type = logit_loss_type  # logits损失类型('wasserstein', 'kl', 'l2')
-        self.loss_computation = loss_computation  # 损失计算方式('avg-loss' 或 'loss-avg')
+        self.loss_computation = loss_computation  # 损失计算方式('avg-loss', 'loss-avg', 'weight-loss-avg', 'weight-avg-loss')
+
+        # 6. 混合优化策略参数
+        self.enable_individual_tuning = enable_individual_tuning  # 是否启用个体微调
+        self.individual_tuning_iterations = individual_tuning_iterations  # 个体微调迭代次数
+        self.individual_tuning_lr = individual_tuning_lr  # 个体微调学习率
+        self.individual_tuning_ratio = individual_tuning_ratio  # 个体微调时选择的合成图像比例
 
         # 4. 模型评估和测试相关参数
         self.eval_gap = eval_gap  # 模型评估的间隔轮次
@@ -103,7 +134,13 @@ class FedNumServer:
         self.model_identification = model_identification  # 模型标识符，用于保存路径
         self.dataset_info = dataset_info  # 数据集元信息（图像尺寸、通道数等）
 
-        # 6. 初始化全局合成数据集
+        # 6. 混合优化策略参数
+        self.enable_individual_tuning = enable_individual_tuning  # 是否启用个体微调
+        self.individual_tuning_iterations = individual_tuning_iterations  # 个体微调迭代次数
+        self.individual_tuning_lr = individual_tuning_lr  # 个体微调学习率
+        self.individual_tuning_ratio = individual_tuning_ratio  # 个体微调时选择的合成图像比例
+
+        # 7. 初始化全局合成数据集
         # 收集所有客户端的类别信息，构建全局类别集合
         all_classes = set()
         for client in self.clients:
@@ -114,6 +151,7 @@ class FedNumServer:
         self.dm_data_path = os.path.join(os.path.dirname(__file__), '../results/', 
                                         self.model_identification, 'dm_synthetic_data.pt')
         self.dm_data_generated = False  # 标记是否已生成DM合成数据
+        self.current_round = 0  # 添加当前轮次追踪，用于DM初始化策略
         
         # 初始化合成数据：这是FedNum算法的核心数据结构
         self.synthetic_images = self._initialize_synthetic_data()
@@ -351,24 +389,27 @@ class FedNumServer:
         print(f'Selected {len(selected_clients)} clients for DM data generation')
         
         for client in selected_clients:
-            # 创建对应的FedDM客户端
-            fedDM_client = FedDMClient(
-                cid=client.cid,
-                train_set=client.train_set,
-                classes=client.classes,
-                dataset_info=self.dataset_info,
-                ipc=self.ipc,
-                rho=self.rho,
-                dc_iterations=self.dc_iterations,
-                real_batch_size=min(32, len(client.train_set.indices_class.get(client.classes[0], []))),
-                image_lr=self.image_lr,
-                device=self.device,
-                init_method='real_sample'  # 对DM客户端使用真实样本初始化
-            )
+            # 计算该客户端基于样本数量的动态IPC值
+            # 每个类别的合成数据数量 = max(1, round(该类别样本数量 * 0.01))
+            client_class_samples = {}
+            total_synthetic_images = 0
             
-            # 发送全局模型并训练
-            fedDM_client.recieve_model(self.global_model)
-            client_synthetic_data, client_synthetic_labels = fedDM_client.train()
+            for class_id in client.classes:
+                # 获取该客户端该类别的样本数量
+                class_indices = client.train_set.indices_class.get(class_id, [])
+                num_samples = len(class_indices)
+                
+                # 计算该类别的合成数据数量：1%，四舍五入，至少为1
+                synthetic_count = max(1, int(num_samples * 0.01 + 0.5))  # 使用传统四舍五入
+                client_class_samples[class_id] = synthetic_count
+                total_synthetic_images += synthetic_count
+                
+                print(f'Client {client.cid}, Class {class_id}: {num_samples} real samples -> {synthetic_count} synthetic samples')
+            
+            # 创建自定义的FedDM客户端，支持每个类别不同的IPC
+            client_synthetic_data, client_synthetic_labels = self._create_custom_dm_data_for_client(
+                client, client_class_samples
+            )
             
             # 收集合成数据
             all_synthetic_data.append(client_synthetic_data)
@@ -471,6 +512,120 @@ class FedNumServer:
                 else:
                     print(f'Class {c}: no DM synthetic data found, keeping random initialization')
 
+    def _create_custom_dm_data_for_client(self, client, class_samples_dict):
+        """
+        为单个客户端创建自定义的DM合成数据，每个类别的合成数量可以不同
+        
+        参数：
+        - client: FedNum客户端对象
+        - class_samples_dict: 字典，键为类别ID，值为该类别需要生成的合成数据数量
+        
+        返回值：
+        - client_synthetic_data: 该客户端生成的合成数据
+        - client_synthetic_labels: 对应的标签
+        """
+        import copy
+        import torch
+        from client.fedDMclient import Client as FedDMClient
+        
+        # 计算总的合成图像数量
+        total_synthetic_count = sum(class_samples_dict.values())
+        
+        # 创建自定义的合成图像张量
+        custom_synthetic_images = torch.randn(
+            size=(
+                total_synthetic_count,
+                self.dataset_info['channel'],
+                self.dataset_info['im_size'][0],
+                self.dataset_info['im_size'][1],
+            ),
+            dtype=torch.float,
+            requires_grad=True,
+            device=self.device,
+        )
+        
+        # 使用真实样本初始化合成图像
+        with torch.no_grad():
+            current_idx = 0
+            for class_id in client.classes:
+                if class_id in class_samples_dict:
+                    synthetic_count = class_samples_dict[class_id]
+                    
+                    # 从该类别的真实样本中随机选择进行初始化
+                    if hasattr(client.train_set, 'get_images'):
+                        try:
+                            real_samples = client.train_set.get_images(class_id, synthetic_count, avg=False)
+                            if real_samples.size(0) < synthetic_count:
+                                # 如果真实样本不足，重复采样
+                                repeats = (synthetic_count + real_samples.size(0) - 1) // real_samples.size(0)
+                                real_samples = real_samples.repeat(repeats, 1, 1, 1)[:synthetic_count]
+                            
+                            custom_synthetic_images.data[current_idx:current_idx+synthetic_count] = real_samples.detach().to(self.device)
+                            print(f'Client {client.cid}, Class {class_id}: initialized {synthetic_count} synthetic images with real samples')
+                        except Exception as e:
+                            print(f'Failed to initialize with real samples for client {client.cid}, class {class_id}: {e}')
+                    
+                    current_idx += synthetic_count
+        
+        # 设置优化器
+        optimizer_image = torch.optim.SGD([custom_synthetic_images], lr=self.image_lr, momentum=0.5, weight_decay=0)
+        
+        # 进行数据凝聚迭代
+        for dc_iteration in range(self.dc_iterations):
+            # 使用模型扰动
+            from utils.fedDMutils import random_pertube
+            sample_model = random_pertube(self.global_model, self.rho)
+            sample_model.eval()
+            
+            loss = torch.tensor(0.0).to(self.device)
+            current_idx = 0
+            
+            for class_id in client.classes:
+                if class_id in class_samples_dict:
+                    synthetic_count = class_samples_dict[class_id]
+                    
+                    # 获取真实数据批次
+                    real_batch_size = min(32, len(client.train_set.indices_class.get(class_id, [])))
+                    real_image = client.train_set.get_images(class_id, real_batch_size)
+                    
+                    # 获取合成数据
+                    synthetic_image = custom_synthetic_images[current_idx:current_idx+synthetic_count].reshape(
+                        (synthetic_count, self.dataset_info['channel'], 
+                         self.dataset_info['im_size'][0], self.dataset_info['im_size'][1]))
+                    
+                    real_image = real_image.to(self.device)
+                    
+                    # 计算特征和logits
+                    real_feature = sample_model.embed(real_image).detach()
+                    synthetic_feature = sample_model.embed(synthetic_image)
+                    real_logits = sample_model(real_image).detach()
+                    synthetic_logits = sample_model(synthetic_image)
+                    
+                    # 计算损失
+                    loss += torch.sum((torch.mean(real_feature, dim=0) - torch.mean(synthetic_feature, dim=0))**2)
+                    loss += torch.sum((torch.mean(real_logits, dim=0) - torch.mean(synthetic_logits, dim=0))**2)
+                    
+                    current_idx += synthetic_count
+            
+            # 更新合成图像
+            optimizer_image.zero_grad()
+            loss.backward()
+            optimizer_image.step()
+            
+            if dc_iteration % 100 == 0:
+                print(f'Client {client.cid}, DC iteration {dc_iteration}, loss = {loss.item():.6f}')
+        
+        # 创建标签
+        synthetic_labels = []
+        for class_id in client.classes:
+            if class_id in class_samples_dict:
+                synthetic_count = class_samples_dict[class_id]
+                synthetic_labels.extend([class_id] * synthetic_count)
+        
+        synthetic_labels = torch.tensor(synthetic_labels, dtype=torch.long)
+        
+        return copy.deepcopy(custom_synthetic_images.detach()), synthetic_labels
+
     def fit(self):
         """
         FedNum算法的主训练循环
@@ -487,6 +642,9 @@ class FedNumServer:
         # 主要的联邦学习训练循环
         for rounds in range(self.communication_rounds):
             print(f' ====== round {rounds} ======')
+            
+            # 更新当前轮次追踪
+            self.current_round = rounds
             
             # === 阶段1: 模型评估 ===
             # 定期评估全局模型在测试集上的性能
@@ -516,11 +674,14 @@ class FedNumServer:
                 client_data = client.train()  # 返回包含平均特征和logits的字典
                 client_data_list.append(client_data)
 
-            # === 阶段3: 合成数据更新 ===
-            print('---------- update synthetic data ----------')
+            # === 阶段3: 混合优化策略的合成数据更新 ===
+            print('---------- update synthetic data (hybrid optimization) ----------')
 
-            # 使用收集到的客户端统计信息通过梯度匹配更新合成数据
-            # 这是算法的创新点：通过优化合成数据使其产生类似的特征和logits分布
+            # 使用收集到的客户端统计信息通过混合优化策略更新合成数据
+            # 混合优化包含两个阶段：
+            # 1. 批量更新：对所有合成数据进行全局梯度匹配优化
+            # 2. 个体微调：选择表现较差的合成图像进行精细调整
+            # 这种策略在保持全局一致性的同时，提升了局部细节的质量
             self._update_synthetic_data(client_data_list)
 
             # === 阶段4: 全局模型训练 ===
@@ -561,10 +722,15 @@ class FedNumServer:
 
             round_time = time.time() - start_time
             print(f'epoch avg loss = {total_loss / self.model_epochs}, total time = {round_time}')
+            
+            # 记录混合优化策略的使用情况
+            optimization_strategy = "Hybrid Optimization" if self.enable_individual_tuning else "Batch Optimization Only"
             wandb.log({
                 "time": round_time,
                 "epoch_avg_loss": total_loss / self.model_epochs,
-                "evaluate_acc": evaluate_acc
+                "evaluate_acc": evaluate_acc,
+                "optimization_strategy": optimization_strategy,
+                "individual_tuning_enabled": self.enable_individual_tuning
             })
 
             save_root_path = os.path.join(os.path.dirname(__file__), '../results/')
@@ -658,18 +824,25 @@ class FedNumServer:
         - client_data_list: 包含所有客户端统计信息的列表
         """
         
-        # 步骤1: 数据预处理 - 重新初始化（可选）
-        # 如果使用真实样本初始化，每轮都重新初始化合成数据以增加多样性
+        # 步骤1: 数据预处理 - 智能初始化策略
+        # 对于不同的初始化方法采用不同的策略
         if self.init_method == 'real_sample':
+            # 真实样本初始化：每轮都重新初始化以增加多样性
             print('Re-initializing synthetic data with real samples for this round...')
             self._initialize_with_real_samples(self.synthetic_images)
         elif self.init_method == 'dm':
-            print('Re-initializing synthetic data with DM method for this round...')
+            # # DM初始化：只在第一轮使用DM初始化，之后轮次继续在上一轮基础上优化
+            # if self.current_round == 0 or self.current_round %5 == 0:
+            print('First round: initializing synthetic data with DM method...')
             self._initialize_with_dm_data(self.synthetic_images)
+            # else:
+            #     print(f'Round {self.current_round}: continuing optimization on previous round results for data continuity...')
+            #     # 不重新初始化，直接在上一轮优化结果的基础上继续优化
         
         # 步骤2: 数据整合 - 合并所有客户端的统计信息
         all_avg_features = {}  # 存储所有客户端的平均特征
         all_avg_logits = {}    # 存储所有客户端的平均logits
+        all_avg_counts = {}    # 存储所有客户端的平均样本数量
         
         # 遍历每个客户端的数据
         for client_data in client_data_list:
@@ -677,14 +850,17 @@ class FedNumServer:
                 if c not in all_avg_features:
                     all_avg_features[c] = []
                     all_avg_logits[c] = []
+                    all_avg_counts[c] = []
                 # 将同一类别的数据从不同客户端合并
                 all_avg_features[c].append(client_data['avg_features'][c])
                 all_avg_logits[c].append(client_data['avg_logits'][c])
+                all_avg_counts[c].append(client_data['avg_counts'][c])
 
         # 步骤3: 数据拼接 - 将每个类别的统计信息拼接成张量
         for c in all_avg_features:
             all_avg_features[c] = torch.cat(all_avg_features[c], dim=0)
             all_avg_logits[c] = torch.cat(all_avg_logits[c], dim=0)
+            all_avg_counts[c] = torch.cat(all_avg_counts[c], dim=0)
 
         print(f'Collected averaged features and logits for classes: {list(all_avg_features.keys())}')
 
@@ -733,6 +909,7 @@ class FedNumServer:
                     indices = torch.randperm(available_avg_samples)[:sample_size]
                     target_avg_features = all_avg_features[c][indices].to(self.device)
                     target_avg_logits = all_avg_logits[c][indices].to(self.device)
+                    target_avg_counts = all_avg_counts[c][indices].to(self.device)  # 获取对应的样本数量
 
                     # 步骤5.6: 计算合成数据的统计摘要
                     # 计算当前类别合成数据的平均特征和平均logits
@@ -782,22 +959,336 @@ class FedNumServer:
                             target_logit_mean, 
                             self.logit_loss_type
                         )
+                        
+                    elif self.loss_computation == 'weight-loss-avg':
+                        # 策略3: weight-loss-avg
+                        # 使用样本数量作为权重，分别计算损失后加权平均
+                        # 权重计算：weight_i = count_i / total_count
+                        total_count = torch.sum(target_avg_counts).float()
+                        weights = target_avg_counts.float() / total_count
+                        
+                        for j in range(sample_size):
+                            target_feature = target_avg_features[j]
+                            target_logit = target_avg_logits[j]
+                            weight = weights[j]
+                            
+                            # 加权特征匹配损失
+                            feature_loss += weight * torch.sum((synthetic_feature_mean - target_feature) ** 2)
+                            
+                            # 加权Logits匹配损失
+                            logit_loss += weight * self._compute_logit_loss(
+                                synthetic_logit_mean, 
+                                target_logit, 
+                                self.logit_loss_type
+                            )
+                            
+                    elif self.loss_computation == 'weight-avg-loss':
+                        # 策略4: weight-avg-loss
+                        # 使用样本数量作为权重，先加权平均目标统计信息，然后计算损失
+                        # 加权平均公式：weighted_avg = Σ(weight_i * value_i) / Σ(weight_i)
+                        total_count = torch.sum(target_avg_counts).float()
+                        weights = target_avg_counts.float() / total_count
+                        
+                        # 计算加权平均特征和logits
+                        weighted_feature_mean = torch.zeros_like(target_avg_features[0])
+                        weighted_logit_mean = torch.zeros_like(target_avg_logits[0])
+                        
+                        for j in range(sample_size):
+                            weight = weights[j]
+                            weighted_feature_mean += weight * target_avg_features[j]
+                            weighted_logit_mean += weight * target_avg_logits[j]
+                        
+                        # 计算加权损失
+                        feature_loss = torch.sum((synthetic_feature_mean - weighted_feature_mean) ** 2)
+                        logit_loss = self._compute_logit_loss(
+                            synthetic_logit_mean, 
+                            weighted_logit_mean, 
+                            self.logit_loss_type
+                        )
                     
                     else:
-                        raise ValueError(f"Unsupported loss computation method: {self.loss_computation}")
+                        raise ValueError(f"Unsupported loss computation method: {self.loss_computation}. "
+                                       f"Supported methods: 'loss-avg', 'avg-loss', 'weight-loss-avg', 'weight-avg-loss'")
                     
                     # 累加所有类别的损失
                     total_loss += feature_loss + logit_loss
 
             # 步骤5.8: 更新合成数据
             # 使用梯度下降优化合成图像，使其产生期望的特征和输出分布
+            # 基于一次损失计算进行10次梯度更新，更充分利用梯度信息
             optimizer_image.zero_grad()  # 清零梯度
             total_loss.backward()        # 反向传播计算梯度
-            optimizer_image.step()       # 更新合成图像参数
+            
+            # 进行10次连续的梯度更新步骤
+            for update_step in range(10):
+                optimizer_image.step()   # 更新合成图像参数
 
             # 定期输出训练进度
             if dc_iteration % 100 == 0:
                 print(f'Synthetic data update iteration {dc_iteration}, total loss = {total_loss.item()}')
+
+        # === 阶段6: 个体微调优化 ===
+        # 在批量更新完成后，进行更细粒度的个体微调以进一步提升精度
+        if self.enable_individual_tuning:
+            print('---------- Starting individual tuning phase ----------')
+            self._individual_tuning_optimization(all_avg_features, all_avg_logits, all_avg_counts)
+
+    def _individual_tuning_optimization(self, all_avg_features, all_avg_logits, all_avg_counts):
+        """
+        个体微调优化：针对每个合成图像进行细粒度优化
+        
+        混合优化策略的第二阶段：
+        1. 批量更新阶段已经为合成数据提供了良好的全局优化基础
+        2. 个体微调阶段针对个别合成图像进行精细调整，提升局部细节
+        
+        个体微调的核心思想：
+        - 选择一部分合成图像进行单独优化
+        - 使用更小的学习率进行精细调整
+        - 针对性地优化表现较差的合成图像
+        - 通过个体优化提升整体模型性能
+        
+        参数：
+        - all_avg_features: 所有客户端的平均特征统计
+        - all_avg_logits: 所有客户端的平均logits统计
+        - all_avg_counts: 所有客户端的样本数量统计
+        """
+        print(f'Starting individual tuning with {self.individual_tuning_iterations} iterations...')
+        
+        total_tuned_images = 0
+        total_improvement = 0.0
+        
+        # 为每个类别进行个体微调
+        for i, c in enumerate(self.all_classes):
+            if c not in all_avg_features:
+                continue  # 跳过没有数据的类别
+            
+            print(f'Individual tuning for class {c}...')
+            
+            # 计算当前类别合成图像的索引范围
+            start_idx = i * self.ipc
+            end_idx = (i + 1) * self.ipc
+            
+            # 获取当前类别的合成图像
+            synthetic_images_class = self.synthetic_images[start_idx:end_idx].reshape(
+                (self.ipc, self.dataset_info['channel'], 
+                 self.dataset_info['im_size'][0], self.dataset_info['im_size'][1]))
+            
+            # 选择需要进行个体微调的合成图像
+            num_selected = max(1, int(self.ipc * self.individual_tuning_ratio))
+            
+            # 评估每个合成图像的质量，选择表现较差的进行微调
+            selected_indices = self._select_images_for_tuning(
+                synthetic_images_class, all_avg_features[c], all_avg_logits[c], num_selected
+            )
+            
+            # 对选中的合成图像进行个体微调
+            for img_idx in selected_indices:
+                global_img_idx = start_idx + img_idx
+                initial_loss, final_loss = self._tune_individual_image(
+                    global_img_idx, c, all_avg_features[c], all_avg_logits[c], all_avg_counts[c]
+                )
+                
+                # 统计改进情况
+                if initial_loss > 0:
+                    improvement = (initial_loss - final_loss) / initial_loss * 100
+                    total_improvement += improvement
+                    total_tuned_images += 1
+                    print(f'Class {c}, Image {img_idx}: improved by {improvement:.2f}% (from {initial_loss:.6f} to {final_loss:.6f})')
+        
+        # 输出总体统计信息
+        if total_tuned_images > 0:
+            avg_improvement = total_improvement / total_tuned_images
+            print(f'Individual tuning completed: {total_tuned_images} images tuned, average improvement: {avg_improvement:.2f}%')
+        else:
+            print('Individual tuning completed: no images were tuned')
+        
+        print('Individual tuning phase completed.')
+
+    def _select_images_for_tuning(self, synthetic_images_class, target_features, target_logits, num_selected):
+        """
+        选择需要进行个体微调的合成图像
+        
+        选择策略：
+        1. 计算每个合成图像与目标统计信息的匹配度
+        2. 选择匹配度较低的图像进行微调
+        3. 这样可以重点改善表现较差的合成数据
+        
+        参数：
+        - synthetic_images_class: 当前类别的合成图像
+        - target_features: 目标特征统计
+        - target_logits: 目标logits统计
+        - num_selected: 需要选择的图像数量
+        
+        返回值：
+        - 选中的图像索引列表
+        """
+        self.global_model.eval()
+        matching_scores = []
+        
+        with torch.no_grad():
+            for img_idx in range(synthetic_images_class.size(0)):
+                # 获取单个合成图像
+                single_image = synthetic_images_class[img_idx:img_idx+1]
+                
+                # 计算特征和logits
+                synthetic_feature = self.global_model.embed(single_image).squeeze(0)
+                synthetic_logit = self.global_model(single_image).squeeze(0)
+                
+                # 计算与目标统计信息的平均匹配度
+                feature_distances = []
+                logit_distances = []
+                
+                for j in range(min(5, target_features.size(0))):  # 只使用前5个目标进行评估，提高效率
+                    target_feature = target_features[j].to(self.device)
+                    target_logit = target_logits[j].to(self.device)
+                    
+                    # 计算特征距离
+                    feature_dist = torch.sum((synthetic_feature - target_feature) ** 2).item()
+                    feature_distances.append(feature_dist)
+                    
+                    # 计算logits距离
+                    logit_dist = self._compute_logit_loss(synthetic_logit, target_logit, 'l2').item()
+                    logit_distances.append(logit_dist)
+                
+                # 计算平均匹配分数（距离越大，匹配度越低）
+                avg_feature_dist = sum(feature_distances) / len(feature_distances)
+                avg_logit_dist = sum(logit_distances) / len(logit_distances)
+                total_dist = avg_feature_dist + avg_logit_dist
+                
+                matching_scores.append((img_idx, total_dist))
+        
+        # 按照匹配分数降序排序，选择匹配度最低的图像进行微调
+        matching_scores.sort(key=lambda x: x[1], reverse=True)
+        selected_indices = [idx for idx, _ in matching_scores[:num_selected]]
+        
+        print(f'Selected {len(selected_indices)} images for individual tuning with worst matching scores')
+        return selected_indices
+
+    def _tune_individual_image(self, global_img_idx, class_id, target_features, target_logits, target_counts):
+        """
+        对单个合成图像进行微调优化
+        
+        个体微调的核心算法：
+        1. 创建单独的优化器，使用较小的学习率
+        2. 针对该图像计算精确的损失函数
+        3. 进行多次迭代优化，直到收敛或达到最大迭代次数
+        4. 使用动态学习率调整策略
+        
+        参数：
+        - global_img_idx: 合成图像在全局数组中的索引
+        - class_id: 类别ID
+        - target_features: 目标特征统计
+        - target_logits: 目标logits统计
+        - target_counts: 目标样本数量统计
+        
+        返回值：
+        - initial_loss: 初始损失值
+        - final_loss: 最终损失值
+        """
+        # 计算初始损失，用于评估改进程度
+        with torch.no_grad():
+            initial_image = self.synthetic_images[global_img_idx:global_img_idx+1].reshape(
+                (1, self.dataset_info['channel'], 
+                 self.dataset_info['im_size'][0], self.dataset_info['im_size'][1]))
+            initial_feature = self.global_model.embed(initial_image).squeeze(0)
+            initial_logit = self.global_model(initial_image).squeeze(0)
+            
+            initial_loss = 0.0
+            for j in range(min(3, target_features.size(0))):
+                target_feature = target_features[j].to(self.device)
+                target_logit = target_logits[j].to(self.device)
+                initial_loss += torch.sum((initial_feature - target_feature) ** 2).item()
+                initial_loss += self._compute_logit_loss(initial_logit, target_logit, 'l2').item()
+            initial_loss /= min(3, target_features.size(0))
+        
+        # 为单个图像创建优化器
+        single_image_param = self.synthetic_images[global_img_idx:global_img_idx+1].clone().detach().requires_grad_(True)
+        optimizer = torch.optim.Adam([single_image_param], lr=self.individual_tuning_lr, weight_decay=1e-5)
+        
+        # 动态学习率调度器
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.individual_tuning_iterations, eta_min=self.individual_tuning_lr * 0.1
+        )
+        
+        best_loss = float('inf')
+        best_image = None
+        patience = 10  # 早停机制的耐心值
+        no_improve_count = 0
+        
+        for iteration in range(self.individual_tuning_iterations):
+            self.global_model.eval()
+            
+            # 重塑图像为正确格式
+            single_image = single_image_param.reshape(
+                (1, self.dataset_info['channel'], 
+                 self.dataset_info['im_size'][0], self.dataset_info['im_size'][1]))
+            
+            # 计算特征和logits
+            synthetic_feature = self.global_model.embed(single_image).squeeze(0)
+            synthetic_logit = self.global_model(single_image).squeeze(0)
+            
+            # 计算损失
+            total_loss = torch.tensor(0.0).to(self.device)
+            
+            # 选择多个目标进行匹配，增加鲁棒性
+            num_targets = min(3, target_features.size(0))
+            indices = torch.randperm(target_features.size(0))[:num_targets]
+            
+            for idx in indices:
+                target_feature = target_features[idx].to(self.device)
+                target_logit = target_logits[idx].to(self.device)
+                
+                # 特征匹配损失
+                feature_loss = torch.sum((synthetic_feature - target_feature) ** 2)
+                
+                # Logits匹配损失
+                logit_loss = self._compute_logit_loss(synthetic_logit, target_logit, self.logit_loss_type)
+                
+                # 如果有样本数量信息，使用加权损失
+                if target_counts.size(0) > idx:
+                    weight = target_counts[idx].float() / torch.sum(target_counts).float()
+                    total_loss += weight * (feature_loss + logit_loss)
+                else:
+                    total_loss += feature_loss + logit_loss
+            
+            # 平均损失
+            total_loss = total_loss / num_targets
+            
+            # 添加正则化项，防止过拟合
+            l2_reg = 0.001 * torch.sum(single_image_param ** 2)
+            total_loss += l2_reg
+            
+            # 反向传播和优化
+            optimizer.zero_grad()
+            total_loss.backward()
+            
+            # 梯度裁剪，防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_([single_image_param], max_norm=1.0)
+            
+            optimizer.step()
+            scheduler.step()
+            
+            # 早停机制
+            if total_loss.item() < best_loss:
+                best_loss = total_loss.item()
+                best_image = single_image_param.detach().clone()
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+                
+            if no_improve_count >= patience:
+                print(f'Early stopping at iteration {iteration} for image {global_img_idx}')
+                break
+        
+        # 更新全局合成数据
+        final_loss = best_loss if best_image is not None else total_loss.item()
+        
+        if best_image is not None:
+            self.synthetic_images.data[global_img_idx:global_img_idx+1] = best_image
+        else:
+            self.synthetic_images.data[global_img_idx:global_img_idx+1] = single_image_param.detach()
+        
+        return initial_loss, final_loss
 
     def _get_synthetic_dataset(self):
         """

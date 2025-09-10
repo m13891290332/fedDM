@@ -73,12 +73,13 @@ class Client:
             # sample w ~ P_w(w_r)
             # sample_model = sample_random_model(self.global_model, self.rho)
             sample_model = random_pertube(self.global_model, self.rho)
+            # sample_model = self.global_model
             sample_model.eval()
 
             # sample a mini-batch of real / synthetic image for each class then compute DC loss based on equation 8
             loss = torch.tensor(0.0).to(self.device)
             for i, c in enumerate(self.classes):
-                real_image = self.train_set.get_images(c, self.real_batch_size)
+                real_image = self.train_set.get_images(c, self.real_batch_size, avg=True)
                 synthetic_image = self.synthetic_images[i*self.ipc : (i+1)*self.ipc].reshape(
                     (self.ipc, self.dataset_info['channel'], self.dataset_info['im_size'][0], self.dataset_info['im_size'][1]))
 
@@ -88,7 +89,7 @@ class Client:
                 synthetic_feature = sample_model.embed(synthetic_image)
                 real_logits = sample_model(real_image).detach()
                 synthetic_logits = sample_model(synthetic_image)
-
+                print(f'Client {self.cid} class {c}: real_feature shape {real_feature.shape}, synthetic_feature shape {synthetic_feature.shape}')    
                 loss += torch.sum((torch.mean(real_feature, dim=0) - torch.mean(synthetic_feature, dim=0))**2)
                 loss += torch.sum((torch.mean(real_logits, dim=0) - torch.mean(synthetic_logits, dim=0))**2)
 

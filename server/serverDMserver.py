@@ -29,6 +29,7 @@ class ProtoDMServer:
         dc_iterations: int,
         image_lr: float,
         rho: float,
+        real_batch_size: int,  # 添加real_batch_size参数，用于模拟fedDM的动态采样
         # --- initialization method ---
         init_method: str,
         # --- test and evaluation information ---
@@ -51,6 +52,7 @@ class ProtoDMServer:
         self.dc_iterations = dc_iterations
         self.image_lr = image_lr
         self.rho = rho
+        self.real_batch_size = real_batch_size  # 保存real_batch_size参数
         self.init_method = init_method
 
         self.eval_gap = eval_gap
@@ -277,40 +279,53 @@ class ProtoDMServer:
                 
                 # 与客户端的该类别真实数据进行匹配
                 if c in client_info['real_features'] and c in client_info['real_logits']:
-                    # 使用真实样本特征进行更精确的匹配
+                    # === 改进1: 模拟 fedDM 的动态采样行为 ===
+                    # 使用更大的样本池进行动态采样
+                    available_features = None
+                    available_logits = None
+                    
+                    # 优先使用full_samples（更多样本），回退到samples
                     if 'samples' in client_info['real_features'][c] and client_info['real_features'][c]['samples'].size(0) > 0:
-                        # 使用实际的真实样本特征，而不只是均值
-                        real_feature_samples = client_info['real_features'][c]['samples'].to(self.device)
-                        real_logits_samples = client_info['real_logits'][c]['samples'].to(self.device)
-                        
-                        # 模拟 fedDMclient 的随机采样行为
-                        if real_feature_samples.size(0) > 1:
-                            # 随机选择一个子集进行匹配，模拟 real_batch_size 的效果
-                            batch_size = min(real_feature_samples.size(0), max(1, real_feature_samples.size(0) // 2))
-                            indices = torch.randperm(real_feature_samples.size(0))[:batch_size]
-                            sampled_features = real_feature_samples[indices]
-                            sampled_logits = real_logits_samples[indices]
+                        available_features = client_info['real_features'][c]['samples'].to(self.device)
+                        available_logits = client_info['real_logits'][c]['samples'].to(self.device)
+                    
+                    if available_features is not None and available_features.size(0) > 0:
+                        # === 改进2: 动态采样，模拟fedDM的real_batch_size行为 ===
+                        # 每次迭代随机采样不同的真实样本子集，完全模拟fedDM的get_images随机性
+                        # 使用与fedDM相同的batch_size逻辑
+                        effective_batch_size = min(available_features.size(0), self.real_batch_size)
+                        if available_features.size(0) > effective_batch_size:
+                            # 随机采样，模拟fedDM每次迭代调用train_set.get_images(c, real_batch_size)的行为
+                            indices = torch.randperm(available_features.size(0))[:effective_batch_size]
+                            sampled_features = available_features[indices]
+                            sampled_logits = available_logits[indices]
                         else:
-                            sampled_features = real_feature_samples
-                            sampled_logits = real_logits_samples
+                            sampled_features = available_features
+                            sampled_logits = available_logits
                         
                         # 计算真实样本的均值
                         real_feature_mean = torch.mean(sampled_features, dim=0).detach()
                         real_logits_mean = torch.mean(sampled_logits, dim=0).detach()
                         
-                        # 特征匹配损失
+                        # 特征匹配损失 - 完全模拟fedDM的损失计算
                         synthetic_feature_mean = torch.mean(synthetic_features, dim=0)
                         total_loss += torch.sum((real_feature_mean - synthetic_feature_mean)**2)
                         
-                        # Logits匹配损失
-                        synthetic_logits_mean = torch.mean(synthetic_logits, dim=0)
-                        total_loss += torch.sum((real_logits_mean - synthetic_logits_mean)**2)
+                        # # Logits匹配损失 - 完全模拟fedDM的损失计算
+                        # synthetic_logits_mean = torch.mean(synthetic_logits, dim=0)
+                        # total_loss += torch.sum((real_logits_mean - synthetic_logits_mean)**2)
                         
-                        # 添加特征分布匹配损失（增强数据质量）
-                        if sampled_features.size(0) > 1 and synthetic_features.size(0) > 1:
-                            real_feature_std = torch.std(sampled_features, dim=0)
-                            synthetic_feature_std = torch.std(synthetic_features, dim=0)
-                            total_loss += 0.1 * torch.sum((real_feature_std - synthetic_feature_std)**2)
+                        # # 可选：添加特征分布匹配损失（帮助维持数据质量）
+                        # if sampled_features.size(0) > 1 and synthetic_features.size(0) > 1:
+                        #     real_feature_std = torch.std(sampled_features, dim=0)
+                        #     synthetic_feature_std = torch.std(synthetic_features, dim=0)
+                        #     # 权重较小，避免过度约束
+                        #     total_loss += 0.05 * torch.sum((real_feature_std - synthetic_feature_std)**2)
+                        
+                        # 调试信息：打印采样信息
+                        if dc_iteration % 200 == 0:
+                            print(f'  Class {c}: sampled {sampled_features.size(0)} features from {available_features.size(0)} available')
+                    
                     else:
                         # 回退到预计算的均值（如果没有样本数据）
                         target_feature_mean = client_info['real_features'][c]['mean'].to(self.device)
@@ -320,6 +335,8 @@ class ProtoDMServer:
                         target_logits_mean = client_info['real_logits'][c]['mean'].to(self.device)
                         synthetic_logits_mean = torch.mean(synthetic_logits, dim=0)
                         total_loss += torch.sum((target_logits_mean - synthetic_logits_mean)**2)
+                        
+                        print(f'  Class {c}: using fallback to mean features (no samples available)')
             
             # 更新合成图像
             optimizer_image.zero_grad()
@@ -327,7 +344,12 @@ class ProtoDMServer:
             optimizer_image.step()
             
             if dc_iteration % 100 == 0:
-                print(f'Client {cid} data synthesis iteration {dc_iteration}, total loss = {total_loss.item()}')
+                avg_loss = total_loss.item() / len(client_classes) if len(client_classes) > 0 else 0
+                print(f'Client {cid} data synthesis iteration {dc_iteration}, total loss = {total_loss.item():.4f}, avg loss = {avg_loss:.4f}')
+                
+            # 每200次迭代打印详细的采样统计信息
+            if dc_iteration % 200 == 0:
+                print(f'  [Iteration {dc_iteration}] Improved ServerDM synthesis progress:')
         
         # 准备返回数据
         synthetic_labels = []

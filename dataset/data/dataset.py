@@ -109,10 +109,10 @@ class PerLabelDatasetNonIID():
             
             sampled_imgs = []
             for _ in range(n):
-                if len(self.indices_class[c]) >= 5:
-                    idx = np.random.choice(self.indices_class[c], 5, replace=False)
+                if len(self.indices_class[c]) >= 4:
+                    idx = np.random.choice(self.indices_class[c], 4, replace=False)
                 else:
-                    idx = np.random.choice(self.indices_class[c], 5, replace=True)
+                    idx = np.random.choice(self.indices_class[c], 4, replace=True)
                 sampled_imgs.append(torch.mean(self.images_all[idx], dim=0, keepdim=True))
             sampled_imgs = torch.cat(sampled_imgs, dim=0).cuda()
             return sampled_imgs

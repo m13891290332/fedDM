@@ -66,9 +66,9 @@ class ProtoDMClient:
                     print(f'Client {self.cid} has no samples for class {c}, skipping...')
                     continue
                     
-                # 获取该类别的所有真实图像，确保至少请求1个样本
-                num_samples = max(1, min(self.real_batch_size * 10, available_samples))  # 增加样本数量
-                real_images = self.train_set.get_images(c, num_samples)
+                # 获取该类别的更多真实图像样本，增加多样性
+                # 参考fedDM，每次迭代都可能采样到不同的真实数据，所以我们需要更多样本
+                real_images = self.train_set.get_images(c, self.real_batch_size)
                 real_images = real_images.to(self.device)
                 
                 # 再次检查获取的图像是否有效
@@ -80,17 +80,20 @@ class ProtoDMClient:
                 real_features = sample_model.embed(real_images)
                 real_logits = sample_model(real_images)
                 
-                # 计算统计信息
+                # 计算统计信息并保存更多样本用于服务器端动态采样
+                max_samples_to_save = min(self.real_batch_size * 10, real_features.size(0))  # 保存更多样本特征
                 synthesis_info['real_features'][c] = {
                     'mean': torch.mean(real_features, dim=0).cpu(),
                     'std': torch.std(real_features, dim=0).cpu(),
-                    'samples': real_features[:min(self.real_batch_size * 2, real_features.size(0))].cpu()  # 保存更多样本特征
+                    'samples': real_features[:max_samples_to_save].cpu(),  # 保存更多样本特征供服务器动态采样
+                    'full_samples': real_features.cpu() if real_features.size(0) <= 100 else real_features[:100].cpu()  # 保存完整样本集或前100个
                 }
                 
                 synthesis_info['real_logits'][c] = {
                     'mean': torch.mean(real_logits, dim=0).cpu(),
                     'std': torch.std(real_logits, dim=0).cpu(),
-                    'samples': real_logits[:min(self.real_batch_size * 2, real_logits.size(0))].cpu()  # 保存更多样本logits
+                    'samples': real_logits[:max_samples_to_save].cpu(),  # 保存更多样本logits供服务器动态采样
+                    'full_samples': real_logits.cpu() if real_logits.size(0) <= 100 else real_logits[:100].cpu()  # 保存完整样本集或前100个
                 }
                 
                 # 根据初始化方法决定是否保存原始图像

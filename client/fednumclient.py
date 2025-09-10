@@ -2,6 +2,7 @@ import copy
 from typing import List, Dict
 
 import torch
+import numpy as np
 from tqdm import tqdm
 
 from dataset.data.dataset import PerLabelDatasetNonIID
@@ -86,6 +87,7 @@ class FedNumClient:
         # 初始化存储每个类别平均特征和logits的字典
         class_avg_features = {}
         class_avg_logits = {}
+        class_avg_counts = {}  # 新增：存储每个类别平均值的样本数量
 
         # 步骤2: 在不计算梯度的情况下处理数据（节省内存，提高效率）
         with torch.no_grad():
@@ -109,7 +111,27 @@ class FedNumClient:
                     continue
                 
                 # 将所有图像拼接成一个batch
-                all_real_images = torch.cat(all_real_images, dim=0)
+                original_images = torch.cat(all_real_images, dim=0)
+
+                # 随机打乱图像顺序并重复添加两次，获得3倍的本地图像
+                # 第一次：随机打乱后的图像
+                all_real_images_expanded = []
+                shuffled_indices_0 = torch.randperm(original_images.size(0))
+                shuffled_images_0 = original_images[shuffled_indices_0]
+                all_real_images_expanded.append(shuffled_images_0)
+                
+                # 第二次：随机打乱后的图像
+                shuffled_indices_1 = torch.randperm(original_images.size(0))
+                shuffled_images_1 = original_images[shuffled_indices_1]
+                all_real_images_expanded.append(shuffled_images_1)
+                
+                # 第三次：再次随机打乱后的图像  
+                shuffled_indices_2 = torch.randperm(original_images.size(0))
+                shuffled_images_2 = original_images[shuffled_indices_2]
+                all_real_images_expanded.append(shuffled_images_2)
+                
+                # 拼接所有图像，得到3倍数量的图像
+                all_real_images = torch.cat(all_real_images_expanded, dim=0)
                 all_real_images = all_real_images.to(self.device)
 
                 # 步骤5: 使用全局模型提取特征和logits
@@ -117,7 +139,7 @@ class FedNumClient:
                 # forward(): 提取最终的logits输出
                 all_features = self.global_model.embed(all_real_images)
                 all_logits = self.global_model(all_real_images)
-
+                print(f'Client {self.cid} class {c}: extracted features shape {all_features.shape}, logits shape {all_logits.shape}')
                 # 步骤6: 按avg_num分组并计算平均值
                 # 这是FedNum算法的关键步骤：通过分组平均来压缩数据表示
                 num_samples = all_features.size(0)
@@ -125,6 +147,7 @@ class FedNumClient:
 
                 avg_features_list = []
                 avg_logits_list = []
+                avg_counts_list = []  # 新增：记录每个平均值对应的样本数量
 
                 # 遍历每个分组
                 for group_idx in range(num_groups):
@@ -135,6 +158,9 @@ class FedNumClient:
                     group_features = all_features[start_idx:end_idx]
                     group_logits = all_logits[start_idx:end_idx]
                     
+                    # 记录当前组的实际样本数量
+                    group_size = end_idx - start_idx
+                    
                     # 计算组内平均：这是隐私保护的关键步骤
                     # 平均化操作模糊了单个样本的信息，同时保留了统计特性
                     avg_feature = torch.mean(group_features, dim=0)
@@ -143,10 +169,12 @@ class FedNumClient:
                     # 将结果移到CPU以节省GPU内存
                     avg_features_list.append(avg_feature.cpu())
                     avg_logits_list.append(avg_logit.cpu())
+                    avg_counts_list.append(group_size)  # 记录样本数量
 
                 # 步骤7: 存储每个类别的所有平均组
                 class_avg_features[c] = torch.stack(avg_features_list)
                 class_avg_logits[c] = torch.stack(avg_logits_list)
+                class_avg_counts[c] = torch.tensor(avg_counts_list)  # 新增：样本数量张量
 
                 print(f'Client {self.cid} class {c}: {num_samples} samples -> {len(avg_features_list)} averaged groups')
 
@@ -156,7 +184,8 @@ class FedNumClient:
             'classes': self.classes,
             'ipc': self.ipc,
             'avg_features': class_avg_features,  # 每个类别的平均特征列表
-            'avg_logits': class_avg_logits        # 每个类别的平均logits列表
+            'avg_logits': class_avg_logits,      # 每个类别的平均logits列表
+            'avg_counts': class_avg_counts       # 每个类别的平均样本数量列表
         }
 
     def train(self):
